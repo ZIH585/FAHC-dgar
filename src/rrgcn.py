@@ -199,8 +199,7 @@ class RecurrentRGCN(nn.Module):
         #         embeding_dict[str(ent)]=s_o_embeding[i]
 
         entity_all, indices = torch.unique(entity_all, return_inverse=True)
-        ent_embeding = torch.zeros((self.num_ents, self.h_dim)).to(
-            self.gpu) if use_cuda else torch.zeros(1)
+        ent_embeding = embeding.new_zeros((self.num_ents, self.h_dim))
         # for i,ent in enumerate(entity_all):
         #     ent_embeding[int(ent)]=embeding_dict[str(ent)]
         for i, ent in enumerate(entity_all):
@@ -211,9 +210,10 @@ class RecurrentRGCN(nn.Module):
     def forward(self, g_list, static_graph, use_cuda, model_output=None,model_output_x_t=None, tag=None, diffu_rep="add", output_reply_triple=None, current_query_history_graph=None):
         gate_list = []
         degree_list = []
+        device = self.dynamic_emb.device
         # self.h,static_emb =self.initial_sh(static_graph)
         if self.use_static:
-            static_graph = static_graph.to(self.gpu)
+            static_graph = static_graph.to(device)
             static_graph.ndata['h'] = torch.cat(
                 (self.dynamic_emb, self.words_emb), dim=0)  # 演化得到的表示，和wordemb满足静态图约束
             self.statci_rgcn_layer(static_graph, [])
@@ -235,10 +235,9 @@ class RecurrentRGCN(nn.Module):
                 tag, model_output, use_cuda)
 
         for i, g in enumerate(g_list):
-            g = g.to(self.gpu)
+            g = g.to(device)
             temp_e = self.h[g.r_to_e]
-            x_input = torch.zeros(self.num_rels * 2, self.h_dim).float().cuda(
-            ) if use_cuda else torch.zeros(self.num_rels * 2, self.h_dim).float()
+            x_input = self.dynamic_emb.new_zeros((self.num_rels * 2, self.h_dim))
             for span, r_idx in zip(g.r_len, g.uniq_r):
                 x = temp_e[span[0]:span[1], :]
                 x_mean = torch.mean(x, dim=0, keepdim=True)
@@ -294,11 +293,11 @@ class RecurrentRGCN(nn.Module):
                 embedding, r_emb, all_triples, mode="test")
             return all_triples, score, score_rel
     def loss_of_reply(self, e_embedding, r_embedding, reply,mode='e'):
-        if mode is 'e':
+        if mode == 'e':
             scores_ob = self.decoder_ob.forward(
                     e_embedding, r_embedding, reply).view(-1, self.num_ents)
             loss = self.loss_e(scores_ob, reply[:, 2])
-        elif mode is 'r':
+        elif mode == 'r':
             score_rel = self.rdecoder.forward(
                 e_embedding, r_embedding, reply, mode="train").view(-1, 2 * self.num_rels)
             loss = self.loss_r(score_rel, reply[:, 1])
@@ -325,8 +324,78 @@ class RecurrentRGCN(nn.Module):
         inverse_triples[~mask, 1] = inverse_triples[~mask, 1] - self.num_rels
         
         all_triples = torch.cat([triples, inverse_triples])
-        all_triples = all_triples.to(self.gpu)
         return all_triples
+
+    def get_entity_context(self, glist, static_graph, use_cuda):
+        """Encode the history once for scoring several historical HCP batches.
+
+        The returned embeddings use the same normalization and entity decoder
+        inputs as ``get_loss``. Callers may reuse them for several calls to
+        ``get_entity_logits`` while the model parameters stay unchanged.
+        """
+        if not glist:
+            raise ValueError("HCP scoring requires at least one history graph")
+        evolve_embs, _, relation_emb, _, _ = self.forward(
+            glist, static_graph, use_cuda)
+        entity_emb = (F.normalize(evolve_embs[-1]) if self.layer_norm
+                      else evolve_embs[-1])
+        return entity_emb, relation_emb
+
+    def get_entity_logits(self, glist, triples, static_graph, use_cuda,
+                          context=None):
+        """Score the objects of historical triples without adding inverses.
+
+        Historical HCP files may already contain inverse triples. Pass a
+        ``context`` from ``get_entity_context`` to avoid re-encoding the same
+        history for every candidate or replay chunk. The result has shape
+        ``[len(triples), num_ents]`` and retains student gradients.
+        """
+        if context is None:
+            context = self.get_entity_context(glist, static_graph, use_cuda)
+        entity_emb, relation_emb = context
+        if len(triples) == 0:
+            return entity_emb.new_empty((0, self.num_ents))
+        triples = torch.as_tensor(triples, dtype=torch.long,
+                                  device=entity_emb.device)
+        return self.decoder_ob.forward(
+            entity_emb, relation_emb, triples).view(-1, self.num_ents)
+
+    @staticmethod
+    def teacher_kl_loss(student_logits, teacher_logits, targets,
+                        temperature=2.0, confidence_threshold=0.5):
+        """Temperature-scaled entity KD on trustworthy teacher predictions.
+
+        A query contributes only if the teacher's ordinary (T=1) top entity
+        equals its label and its T=1 top probability meets the threshold.
+        Normalize by all replay queries so a stricter gate reduces the KD
+        contribution instead of increasing the weight of remaining queries.
+        """
+        if temperature <= 0:
+            raise ValueError("temperature must be positive")
+        if not 0 <= confidence_threshold <= 1:
+            raise ValueError("confidence_threshold must be between 0 and 1")
+        if student_logits.shape != teacher_logits.shape or student_logits.ndim != 2:
+            raise ValueError("student and teacher logits must have the same [N, C] shape")
+        if targets.numel() != student_logits.shape[0]:
+            raise ValueError("targets must contain one label per query")
+        if student_logits.shape[0] == 0:
+            return student_logits.sum() * 0
+
+        teacher_logits = teacher_logits.detach().to(student_logits.device)
+        targets = targets.reshape(-1).to(student_logits.device)
+        with torch.no_grad():
+            teacher_prob = F.softmax(teacher_logits.float(), dim=-1)
+            confidence, prediction = teacher_prob.max(dim=-1)
+            keep = prediction.eq(targets) & confidence.ge(confidence_threshold)
+        if not bool(keep.any()):
+            return student_logits.sum() * 0
+
+        teacher_soft = F.softmax(teacher_logits[keep].float() / temperature,
+                                 dim=-1)
+        student_log_soft = F.log_softmax(student_logits[keep].float() / temperature,
+                                         dim=-1)
+        return (F.kl_div(student_log_soft, teacher_soft, reduction="sum")
+                * (temperature ** 2) / student_logits.shape[0])
     
     
     def get_loss(self, glist, triples, static_graph, use_cuda,known_entities=None,negative_rate=None, model_output=None,model_output_x_t=None,tag=None, diffuc=None, output_reply_triple=None, current_query_history_graph=None,mode=None,inc_model=None):
@@ -337,19 +406,16 @@ class RecurrentRGCN(nn.Module):
         :param use_cuda:
         :return:
         """
-        loss_ent = torch.zeros(1).cuda().to(
-            self.gpu) if use_cuda else torch.zeros(1)
-        loss_rel = torch.zeros(1).cuda().to(
-            self.gpu) if use_cuda else torch.zeros(1)
-        loss_static = torch.zeros(1).cuda().to(
-            self.gpu) if use_cuda else torch.zeros(1)
-        loss_Reply = torch.zeros(1).cuda().to(
-            self.gpu) if use_cuda else torch.zeros(1)
+        loss_ent = self.dynamic_emb.new_zeros(1)
+        loss_rel = self.dynamic_emb.new_zeros(1)
+        loss_static = self.dynamic_emb.new_zeros(1)
+        loss_Reply = self.dynamic_emb.new_zeros(1)
         
         if model_output is not None:
             entity_all, ent_embeding = self.select_entity(
                 tag, model_output, use_cuda)
-            output_reply_triple = torch.tensor(output_reply_triple).cuda()
+            output_reply_triple = torch.as_tensor(
+                output_reply_triple, dtype=torch.long, device=triples.device)
             all_output_reply_triple=self.get_all_triple(output_reply_triple)
 
         all_triples=self.get_all_triple(triples)

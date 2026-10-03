@@ -156,10 +156,14 @@ class Att_Diffuse_model(nn.Module):
         cos_sim = torch.norm((cos_mat - torch.eye(self.num_ents, self.num_ents).to(
             cos_mat.device))/math.sqrt(self.emb_dim))  # not real mean
         return cos_sim
-    def gereration_feature(self,args,train_sample_num,model_diffpre,model_repre,last_history,last_output,static_graph_diffu,output_re,output,use_cuda,train_list,mode='c'):
+    def gereration_feature(self,args,train_sample_num,model_diffpre,model_repre,last_history,last_output,static_graph_diffu,output_re,output,use_cuda,train_list,mode='c',hcp_triples=None):
 
         if train_sample_num > 1:
-            if args.delete_his_prompt:
+            if hcp_triples is not None:
+                # The selector has already applied the same fact budget used
+                # by the random/recent HCP baselines.
+                current_query_history_triples = set(tuple(triple) for triple in hcp_triples)
+            elif args.delete_his_prompt:
                 if train_sample_num-1<args.reply_batch:
                     reply_time_index=list(range(train_sample_num))
                 else:
@@ -227,8 +231,7 @@ class Att_Diffuse_model(nn.Module):
         embeding_dict = dict()
        
         entity_all, indices = torch.unique(entity_all, return_inverse=True)
-        ent_embeding = torch.zeros((self.num_ents, self.emb_dim)).to(
-            self.gpu) if use_cuda else torch.zeros(1)
+        ent_embeding = embeding.new_zeros((self.num_ents, self.emb_dim))
         
         for i, ent in enumerate(entity_all):
             ent_embeding[int(ent)] = s_o_embeding[indices == i].mean(dim=0)
@@ -240,17 +243,17 @@ class Att_Diffuse_model(nn.Module):
     def forward(self, sequence, tag, args, train_flag=True, use_cuda=True, static_graph=None, ct=None, model=None, history_glist=None, triples=None,model_output=None, targets=None):
         # initial_h, _=self.initial_h(static_graph)
         if self.use_static:
-            static_graph = static_graph.to(self.gpu)
+            static_graph = static_graph.to(self.emb_ent.device)
             static_graph.ndata['h'] = torch.cat(
                 (self.emb_ent, self.words_emb), dim=0)  # 演化得到的表示，和wordemb满足静态图约束
             self.statci_rgcn_layer(static_graph, [])
             static_emb = static_graph.ndata.pop('h')[:self.num_ents, :]
             static_emb = self.LayerNorm_static(static_emb)
-            padding = torch.zeros_like(static_emb[[-1]]).to(self.gpu)
+            padding = torch.zeros_like(static_emb[[-1]])
             initial_h = torch.concat([static_emb, padding], dim=0)
         else:
             initial_h = self.emb_ent
-            padding = torch.zeros_like(self.emb_ent[[-1]]).to(self.gpu)
+            padding = torch.zeros_like(self.emb_ent[[-1]])
             initial_h = torch.concat([initial_h, padding], dim=0)
             static_emb = None
             
