@@ -283,7 +283,9 @@ class RecurrentRGCN(nn.Module):
 
 
             evolve_embs, _, r_emb, _, _ = self.forward(
-                test_graph, static_graph, use_cuda, model_output=model_output,model_output_x_t=model_output_o, tag=tag, current_query_history_graph=current_query_history_triples)
+                test_graph, static_graph, use_cuda, model_output=model_output,model_output_x_t=model_output_o, tag=tag,
+                diffu_rep=getattr(self.args, "diffuc", "add"),
+                current_query_history_graph=current_query_history_triples)
             embedding = F.normalize(
                 evolve_embs[-1]) if self.layer_norm else evolve_embs[-1]
 
@@ -451,12 +453,14 @@ class RecurrentRGCN(nn.Module):
                     if self.layer_norm:
                         sim_matrix = torch.sum(
                             static_emb * F.normalize(evolve_emb), dim=1)
+                        valid_static = torch.ones_like(sim_matrix, dtype=torch.bool)
                     else:
-                        sim_matrix = torch.sum(static_emb * evolve_emb, dim=1)
-                        c = torch.norm(static_emb, p=2, dim=1) * \
-                            torch.norm(evolve_emb, p=2, dim=1)
-                        sim_matrix = sim_matrix / c
-                    mask = (math.cos(step) - sim_matrix) > 0
+                        norm_product = (torch.norm(static_emb, p=2, dim=1)
+                                        * torch.norm(evolve_emb, p=2, dim=1))
+                        sim_matrix = torch.sum(static_emb * evolve_emb, dim=1) \
+                            / norm_product.clamp_min(1e-8)
+                        valid_static = norm_product > 0
+                    mask = valid_static & ((math.cos(step) - sim_matrix) > 0)
                     loss_static += self.weight * \
                         torch.sum(torch.masked_select(
                             math.cos(step) - sim_matrix, mask))
@@ -466,12 +470,14 @@ class RecurrentRGCN(nn.Module):
                     if self.layer_norm:
                         sim_matrix = torch.sum(
                             static_emb * F.normalize(evolve_emb), dim=1)
+                        valid_static = torch.ones_like(sim_matrix, dtype=torch.bool)
                     else:
-                        sim_matrix = torch.sum(static_emb * evolve_emb, dim=1)
-                        c = torch.norm(static_emb, p=2, dim=1) * \
-                            torch.norm(evolve_emb, p=2, dim=1)
-                        sim_matrix = sim_matrix / c
-                    mask = (math.cos(step) - sim_matrix) > 0
+                        norm_product = (torch.norm(static_emb, p=2, dim=1)
+                                        * torch.norm(evolve_emb, p=2, dim=1))
+                        sim_matrix = torch.sum(static_emb * evolve_emb, dim=1) \
+                            / norm_product.clamp_min(1e-8)
+                        valid_static = norm_product > 0
+                    mask = valid_static & ((math.cos(step) - sim_matrix) > 0)
                     loss_static += self.weight * \
                         torch.sum(torch.masked_select(
                             math.cos(step) - sim_matrix, mask))

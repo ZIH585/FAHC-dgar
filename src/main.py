@@ -13,8 +13,8 @@ import pickle
 import time
 import itertools
 import argparse
-import hashlib
 import json
+from functools import wraps
 from datetime import datetime
 from pathlib import Path
 from rgcn import utils
@@ -28,9 +28,11 @@ from diffusion.model_21 import create_model_diffu, Att_Diffuse_model
 from diffusion.fahc_selector import (load_hcp_candidates, materialize_replay,
                                      recent_candidate_indices,
                                      sample_candidate_indices,
-                                     sample_scoring_candidates, select_hcp)
+                                     select_hcp)
 from src.fahc import (probe_hcp_risks, replay_kd_loss,
                       teacher_replay_logits)
+from src.fahc_config import (experiment_signature, parse_bool, validate_args)
+from src.fahc_runtime import cpu_optimizer_state, isolated_rng
 from torch.optim import *
 
 import copy
@@ -45,6 +47,16 @@ def getReverseSample(test_triplets, num_rels):
     return a_triples
 
 
+def deterministic_evaluation(function):
+    """Use a fixed evaluation RNG without consuming training randomness."""
+    @wraps(function)
+    def wrapped(args, model, *positional, **keywords):
+        with isolated_rng(args.seed + 7000003, next(model.parameters()).device):
+            return function(args, model, *positional, **keywords)
+    return wrapped
+
+
+@deterministic_evaluation
 @torch.no_grad()
 def test(args, model, history_list, test_list, num_rels, num_nodes,
          use_cuda, all_ans_list, all_ans_r_list, model_name,
@@ -77,7 +89,7 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
         # test mode: load parameter form file
         if use_cuda:
             checkpoint = torch.load(
-                model_name, map_location=torch.device(args.gpu))
+                model_name, map_location=torch.device("cuda:{}".format(args.gpu)))
         else:
             checkpoint = torch.load(
                 model_name, map_location=torch.device('cpu'))
@@ -100,16 +112,13 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
     for time_idx, test_snap in enumerate(tqdm(test_list)):
         if time_idx==0:
             continue
-        if time_idx - args.train_history_len < 0:
-            input_list = his_list[0: time_idx]
-        else:
-            input_list = his_list[time_idx - args.test_history_len:
-                                    time_idx]
+        input_list = his_list[max(0, time_idx - args.test_history_len):time_idx]
         history_glist = [build_sub_graph(
             num_nodes, num_rels, g, use_cuda, args.gpu) for g in input_list]
         
         # query_er_history[str(element[0])][str(element[1])]=list(set(query_er_history[str(element[0])][str(element[1])]))
         current_query_history_triples = set()
+        current_query_history_graph = None
         
         if time_idx-1<args.reply_batch:
             reply_time_index=list(range(time_idx))
@@ -117,23 +126,21 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
             reply_time_index=random.sample(list(range(time_idx)), args.reply_batch)
                     
         for i in reply_time_index:
-            related_history=pickle.load(open("../data/{}/history_snap_v2/snap_{}.pkl".format(args.dataset,str(i)),"rb"))
+            with open("../data/{}/history_snap_v2/snap_{}.pkl".format(args.dataset, i), "rb") as history_file:
+                related_history = pickle.load(history_file)
             for element in test_snap:
                 if str(element[0]) in related_history.keys():
                     current_query_history_triples.update(related_history[str(element[0])])
         
-        if len(current_query_history_triples) > 0:
-            current_query_history_graph = build_sub_graph(num_nodes, num_rels, np.array(
-                list(current_query_history_triples)), use_cuda, args.gpu)
-
         test_triples_input = torch.LongTensor(
             test_snap).cuda() if use_cuda else torch.LongTensor(test_snap)
         test_triples_input = test_triples_input.to(device)
 
         sequence = None
-        output_reply_triple = torch.tensor(list(current_query_history_triples)).cuda(
-        ) if use_cuda else torch.tensor(list(current_query_history_triples))
-        if len(output_reply_triple)>0 and args.delete_feature_reply is False:
+        output_reply_triple = torch.as_tensor(
+            sorted(current_query_history_triples), dtype=torch.long,
+            device=device).reshape(-1, 3)
+        if args.diffuc and len(output_reply_triple)>0 and args.delete_feature_reply is False:
             scores, diffu_rep, weights, t, _, ent_emb, noise, _, targets = model_diffpre(
                 sequence, output_reply_triple, args, False, use_cuda, static_graph=static_graph_diffu, ct=time_idx, model=model, history_glist=last_history, triples=last_output)
 
@@ -284,48 +291,45 @@ def evaluate_history_only_snapshots(args, model, train_list, valid_list,
 
 
 def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=None):
-    if (args.hcp_selection != "original" or args.fahc_kd_weight > 0) and (
-            args.delete_feature_reply or not args.diffuc):
-        raise ValueError("FAHC HCP selection requires diffusion feature replay")
-    if args.fahc_kd_weight > 0 and args.hcp_selection == "original":
-        raise ValueError("use --hcp-selection random for budget-matched HCP-KD")
-    if args.hcp_selection != "original" and (
-            args.reply_batch < 1 or args.fahc_fact_budget < args.reply_batch):
-        raise ValueError("controlled HCP selection needs fact budget >= k >= 1")
-    if args.fahc_kd_weight < 0 or args.fahc_eval_every < 0 or args.fahc_past_eval_samples < 0:
-        raise ValueError("FAHC weights and evaluation counts must be nonnegative")
-    if args.fahc_probe_facts < 1:
-        raise ValueError("--fahc-probe-facts must be positive")
-    if args.fahc_score_batch_size < 1 or args.fahc_kd_temperature <= 0:
-        raise ValueError("FAHC score batch size and KD temperature must be positive")
-    if not 0 <= args.fahc_kd_confidence <= 1:
-        raise ValueError("--fahc-kd-confidence must be in [0, 1]")
+    # Apply grid overrides before validation and checkpoint naming.
+    for name, value in (("n_hidden", n_hidden), ("n_layers", n_layers),
+                        ("dropout", dropout), ("n_bases", n_bases)):
+        if value is not None:
+            setattr(args, name, value)
+    validate_args(args)
+    settings_hash = experiment_signature(args)
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + settings_hash
     random.seed(args.seed)
     np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
+    torch.random.default_generator.manual_seed(args.seed)
+    use_cuda = args.gpu >= 0 and torch.cuda.is_available()
+    run_device = torch.device("cuda:{}".format(args.gpu)) if use_cuda else torch.device("cpu")
+    if use_cuda:
+        torch.cuda.set_device(args.gpu)
+        torch.cuda.manual_seed(args.seed)
 
     fahc_enabled = args.hcp_selection != "original" or args.fahc_kd_weight > 0
-    if fahc_enabled and not args.test:
+    diagnostics_enabled = fahc_enabled or args.fahc_diagnostics
+    if diagnostics_enabled and not args.test:
         log_path = (Path(args.fahc_log) if args.fahc_log else
                     Path(__file__).resolve().parents[1] / "logs" /
                     "fahc_{}_{}_{}_{}.jsonl".format(
                         args.dataset, args.hcp_selection, args.seed,
-                        datetime.now().strftime("%Y%m%d_%H%M%S")))
+                        run_id))
         log_path.parent.mkdir(parents=True, exist_ok=True)
         print("FAHC log: {}".format(log_path))
         best_history_mrr = {}
-
-    # load configuration for grid search the best configuration
-    if n_hidden:
-        args.n_hidden = n_hidden
-    if n_layers:
-        args.n_layers = n_layers
-    if dropout:
-        args.dropout = dropout
-    if n_bases:
-        args.n_bases = n_bases
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write(json.dumps({
+                "event": "run_config", "run_id": run_id,
+                "algorithm_version": "full-hcp-v2", "settings_hash": settings_hash,
+                "settings": vars(args).copy(),
+                "risk_context": "history_only_current_stage",
+                "coverage_context": "full_candidate_hcp",
+                "split_protocol": "chronological_merge_then_per_snapshot_80_10_10",
+                "filter_protocol": "same_snapshot_evaluation_split_only",
+                "history_cache": "existing_history_snap_v2",
+            }) + "\n")
     # set_seed(args.seed)
     # load graph data
     print("loading graph data")
@@ -384,24 +388,6 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
         .format(args.dataset, args.encoder, args.decoder, args.n_layers, args.dilate_len, args.train_history_len, args.weight, args.discount, args.angle,
                 args.dropout, args.input_dropout, args.hidden_dropout, args.feat_dropout, args.gpu)
     if fahc_enabled:
-        experiment_settings = {
-            "selection": args.hcp_selection, "k": args.reply_batch,
-            "candidate_multiplier": args.fahc_candidate_multiplier,
-            "fact_budget": args.fahc_fact_budget,
-            "eta": args.fahc_eta, "entity_weight": args.fahc_entity_weight,
-            "time_bin_size": args.fahc_time_bin_size,
-            "probe_steps": args.fahc_probe_steps,
-            "probe_facts": args.fahc_probe_facts,
-            "probe_lr": (args.fahc_probe_lr if args.fahc_probe_lr is not None
-                         else args.lr),
-            "score_batch_size": args.fahc_score_batch_size,
-            "kd_weight": args.fahc_kd_weight,
-            "kd_temperature": args.fahc_kd_temperature,
-            "kd_confidence": args.fahc_kd_confidence,
-            "seed": args.seed,
-        }
-        settings_hash = hashlib.sha1(json.dumps(
-            experiment_settings, sort_keys=True).encode("utf-8")).hexdigest()[:10]
         model_name += "-fahc-{}-{}".format(args.hcp_selection, settings_hash)
     model_state_file = '../models/' + model_name
     print("Sanity Check: stat name : {}".format(model_state_file))
@@ -410,8 +396,9 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     diffu_model_state_file = '../diffu_models/' + model_name
     print("Sanity Check: diffu stat name : {}".format(diffu_model_state_file))
 
-    use_cuda = args.gpu >= 0 and torch.cuda.is_available()
-    run_device = torch.device("cuda:{}".format(args.gpu)) if use_cuda else torch.device("cpu")
+    if not args.test:
+        Path(model_state_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(diffu_model_state_file).parent.mkdir(parents=True, exist_ok=True)
 
     if args.add_static_graph:
         static_triples = np.array(_read_triplets_as_list(
@@ -563,12 +550,13 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     if args.test:
         if not os.path.exists(model_state_file):
             raise FileNotFoundError(model_state_file)
-        if not os.path.exists(diffu_model_state_file):
+        if args.diffuc and not os.path.exists(diffu_model_state_file):
             raise FileNotFoundError(diffu_model_state_file)
 
         # The training branch normally transfers this final diffusion state
         # into the feature generator before calling test().
-        model_diffpre.load_state_dict(torch.load(diffu_model_state_file, map_location="cpu"))
+        if args.diffuc:
+            model_diffpre.load_state_dict(torch.load(diffu_model_state_file, map_location="cpu"))
         model_diffpre.eval()
 
         final_idx = len(train_list) - 1
@@ -646,7 +634,9 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     del checkpoint
 
                 selected_hcp = None
+                selection_start = time.perf_counter()
                 selection_record = {
+                    "event": "stage", "run_id": run_id,
                     "outer_epoch": outer_epoch,
                     "snapshot": train_sample_num,
                     "mode": args.hcp_selection,
@@ -655,6 +645,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     "selected_indices": [],
                     "selected_nonempty_count": 0,
                     "selected_fact_count": 0,
+                    "probe_steps": 0,
                 }
                 if args.hcp_selection != "original" and train_sample_num > 1:
                     selector_rng = random.Random(
@@ -671,9 +662,9 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                         args.dataset, candidate_indices, output_re[:, 0])
                     score_seed = (args.seed + 1000003 * train_sample_num +
                                   9176 * outer_epoch)
-                    candidates = sample_scoring_candidates(
-                        full_candidates, args.reply_batch,
-                        args.fahc_fact_budget, score_seed)
+                    # Risk and coverage describe the complete HCP. The replay
+                    # budget is applied uniformly only after choosing slices.
+                    candidates = full_candidates
                     risks = None
                     if args.hcp_selection in ("risk", "risk+coverage"):
                         probe_output = output
@@ -689,7 +680,11 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                             (args.fahc_probe_lr if args.fahc_probe_lr is not None
                              else args.lr),
                             args.grad_norm, args.fahc_probe_steps,
-                            args.fahc_score_batch_size)
+                            args.fahc_score_batch_size,
+                            training_optimizer=optimizer)
+                        selection_record["probe_steps"] = (
+                            args.fahc_probe_steps if any(
+                                candidate.triples for candidate in candidates) else 0)
                     selected_hcp = select_hcp(
                         candidates, args.reply_batch, risks=risks,
                         mode=args.hcp_selection, eta=args.fahc_eta,
@@ -706,14 +701,30 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                             str(candidate.time_index): len(candidate.triples)
                             for candidate in full_candidates},
                         "scored_fact_counts": {
-                            str(candidate.time_index): len(candidate.triples)
+                            str(candidate.time_index): (
+                                len(candidate.triples) if risks is not None else 0)
+                            for candidate in candidates},
+                        "candidate_inverse_fact_counts": {
+                            str(candidate.time_index): sum(
+                                triple[1] >= num_rels for triple in candidate.triples)
                             for candidate in candidates},
                         "risks": risks or {},
                         "selected_indices": selected_hcp.indices,
                         "selected_nonempty_count": selected_hcp.nonempty_count,
                         "selected_fact_count": selected_hcp.fact_count,
                         "greedy_marginal_scores": selected_hcp.score_by_index,
+                        "selected_full_relation_count": len({
+                            triple[1] % num_rels for candidate in selected_hcp.selected
+                            for triple in candidate.triples}),
+                        "selected_full_time_bin_count": len({
+                            candidate.time_index // args.fahc_time_bin_size
+                            for candidate in selected_hcp.selected if candidate.triples}),
+                        "replay_relation_count": len({
+                            triple[1] % num_rels for triple in selected_hcp.triples}),
+                        "replay_entity_count": len({
+                            entity for s, _, o in selected_hcp.triples for entity in (s, o)}),
                     })
+                selection_record["selection_seconds"] = time.perf_counter() - selection_start
                 
                 with torch.no_grad():
                     output, diffu_rep, output_reply_triple = \
@@ -736,6 +747,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 # best_mrr=0
                 early_stopping = EarlyStopping(patience=5, verbose=False, path=model_state_file)
                 early_stopping_dif = EarlyStopping(patience=5, verbose=False, path=diffu_model_state_file)
+                best_optimizer_state = None
+                best_diffu_optimizer_state = None
                 if diffu_rep is not None:
                     model_output_o=diffu_rep[:,-1,:]
                 else:
@@ -748,7 +761,29 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     teacher_chunks = teacher_replay_logits(
                         model_repre, output_reply_triple, history_glist,
                         static_graph, use_cuda, args.fahc_score_batch_size)
+                    offset = active_count = 0
+                    for teacher in teacher_chunks:
+                        confidence, predictions = teacher.float().softmax(dim=-1).max(dim=-1)
+                        labels = output_reply_triple[offset:offset + len(teacher), 2].cpu()
+                        active_count += int(((predictions == labels) &
+                                             (confidence >= args.fahc_kd_confidence)).sum())
+                        offset += len(teacher)
+                    selection_record["kd_teacher_active_fact_count"] = active_count
                 kd_losses = []
+
+                # The feature teachers do not change within the RGCN loop.
+                # Reuse one seeded validation prompt/noise realization at every
+                # epoch and restore RNG so validation cannot alter training.
+                test_triples_input = torch.as_tensor(
+                    valid_list[train_sample_num], dtype=torch.long, device=run_device)
+                diffu_rep_test = output_reply_triple_test = None
+                if not args.delete_feature_reply:
+                    with isolated_rng(args.seed + 3000017 * train_sample_num, run_device), torch.no_grad():
+                        _, diffu_rep_test, output_reply_triple_test = model_diffpre.gereration_feature(
+                            args, train_sample_num, model_diffpre, model_repre,
+                            last_history, last_output, static_graph_diffu,
+                            valid_list[train_sample_num], test_triples_input,
+                            use_cuda, train_list)
                     
                 for epoch in range(args.regcn_epochs):
                     model.train()
@@ -778,27 +813,6 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     optimizer.step()
                     optimizer.zero_grad()
                     
-                    test_triples_input = torch.LongTensor(
-                        valid_list[train_sample_num]).cuda() if use_cuda else torch.LongTensor(valid_list[train_sample_num])
-                    test_triples_input = test_triples_input.to(run_device)
-                    diffu_rep_test=None
-                    output_reply_triple_test=None
-                    if args.delete_feature_reply is False:
-                        with torch.no_grad():
-                            _, diffu_rep_test, output_reply_triple_test = \
-                                model_diffpre.gereration_feature(
-                                    args,
-                                    train_sample_num,
-                                    model_diffpre,
-                                    model_repre,
-                                    last_history,
-                                    last_output,
-                                    static_graph_diffu,
-                                    valid_list[train_sample_num],
-                                    test_triples_input,
-                                    use_cuda,
-                                    train_list
-                            )
                     mrr, hits, _ = test_single(
                         args, model, history_glist, test_triples_input,
                         train_sample_num, num_rels, num_nodes, use_cuda,
@@ -807,7 +821,12 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                         output_reply_triple_test
                     )
                     
+                    previous_best = early_stopping.best_score
+                    if not torch.isfinite(mrr):
+                        raise ValueError("non-finite RGCN validation MRR")
                     early_stopping(mrr,model)
+                    if previous_best is None or mrr >= previous_best + early_stopping.delta:
+                        best_optimizer_state = cpu_optimizer_state(optimizer)
                     if early_stopping.early_stop:
                         break
                     
@@ -820,7 +839,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                         test_list[train_sample_num]).cuda() if use_cuda else torch.LongTensor(test_list[train_sample_num])
                     test_triples_input = test_triples_input.to(run_device)
                     if args.delete_feature_reply is False:
-                        with torch.no_grad():
+                        with isolated_rng(args.seed + 5000011 * train_sample_num, run_device), torch.no_grad():
                             _, diffu_rep_test, output_reply_triple_test = \
                                 model_diffpre.gereration_feature(
                                     args,
@@ -839,7 +858,10 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     print("the lastet time metric",mrr.item(),hits[0].item(),hits[1].item(),hits[2].item())     
                     
                 # diffu
-                if args.diffuc and epoch >= args.start_reply:
+                # Diffusion training belongs to each snapshot. start_reply is
+                # checked against configured RGCN epochs before starting a run;
+                # an early stop must not leave a missing/stale diffusion file.
+                if args.diffuc:
 
                     sequence = None
                     true_triples = getReverseSample(output, num_rels)
@@ -885,7 +907,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                             num_rels
                         )
 
-                        with torch.no_grad():
+                        with isolated_rng(args.seed + 4000037 * train_sample_num, run_device), torch.no_grad():
 
                             diffu_reps1 = []
 
@@ -922,7 +944,12 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
 
                         args.vl = False
 
+                        previous_best = early_stopping_dif.best_score
+                        if not torch.isfinite(mrr):
+                            raise ValueError("non-finite diffusion validation MRR")
                         early_stopping_dif(mrr, diffu)
+                        if previous_best is None or mrr >= previous_best + early_stopping_dif.delta:
+                            best_diffu_optimizer_state = cpu_optimizer_state(optimizer_diffu)
 
                         if early_stopping_dif.early_stop:
                             break
@@ -935,25 +962,24 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     model_state_file,
                     map_location="cpu"
                 )
-                checkpoint_diffu = torch.load(
-                    diffu_model_state_file,
-                    map_location="cpu"
-                )
-
                 model.load_state_dict(checkpoint)
                 model_repre.load_state_dict(checkpoint)
-                model_diffpre.load_state_dict(checkpoint_diffu)
+                optimizer.load_state_dict(best_optimizer_state)
+                if args.diffuc:
+                    checkpoint_diffu = torch.load(diffu_model_state_file, map_location="cpu")
+                    diffu.load_state_dict(checkpoint_diffu)
+                    model_diffpre.load_state_dict(checkpoint_diffu)
+                    optimizer_diffu.load_state_dict(best_diffu_optimizer_state)
+                    del checkpoint_diffu
 
                 del checkpoint
-                del checkpoint_diffu
 
-                if fahc_enabled:
+                if diagnostics_enabled:
+                    if args.hcp_selection == "original" and output_reply_triple is not None:
+                        selection_record["selected_fact_count"] = len(output_reply_triple)
                     selection_record["kd_weight"] = args.fahc_kd_weight
                     selection_record["kd_mean_loss"] = (
                         float(np.mean(kd_losses)) if kd_losses else None)
-                    selection_record["probe_steps"] = (
-                        args.fahc_probe_steps if args.hcp_selection in
-                        ("risk", "risk+coverage") else 0)
                     if args.fahc_eval_every > 0:
                         evaluate_past = (
                             train_sample_num % args.fahc_eval_every == 0 or
@@ -1003,7 +1029,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r
 
 
-if __name__ == '__main__':
+def build_arg_parser():
     parser = argparse.ArgumentParser(description='REGCN')
 
     parser.add_argument("--gpu", type=int, default=2,
@@ -1026,7 +1052,7 @@ if __name__ == '__main__':
                         help="choose top k entities as results when do multi-steps without ground truth")
     # parser.add_argument("--add-static-graph",  action='store_true',
     #                  help="use the info of static graph")
-    parser.add_argument("--add-static-graph",   default=True,
+    parser.add_argument("--add-static-graph", type=parse_bool, nargs="?", const=True, default=True,
                        help="use the info of static graph")
     parser.add_argument("--add-rel-word", action='store_true', default=False,
                         help="use words in relaitons")
@@ -1062,13 +1088,13 @@ if __name__ == '__main__':
                         help="number of basis vector for compgcn")
     parser.add_argument("--n-layers", type=int, default=2,
                         help="number of propagation rounds")
-    parser.add_argument("--self-loop", action='store_true', default=True,
+    parser.add_argument("--self-loop", type=parse_bool, nargs="?", const=True, default=True,
                         help="perform layer normalization in every layer of gcn ")
-    parser.add_argument("--layer-norm", action='store_true', default=True,
+    parser.add_argument("--layer-norm", type=parse_bool, nargs="?", const=True, default=True,
                         help="perform layer normalization in every layer of gcn ")
-    parser.add_argument("--relation-prediction", action='store_true', default=True,
+    parser.add_argument("--relation-prediction", type=parse_bool, nargs="?", const=True, default=True,
                         help="add relation prediction loss")
-    parser.add_argument("--entity-prediction", action='store_true', default=True,
+    parser.add_argument("--entity-prediction", type=parse_bool, nargs="?", const=True, default=True,
                         help="add entity prediction loss")
     parser.add_argument("--split_by_relation", action='store_true', default=False,
                         help="do relation prediction")
@@ -1143,6 +1169,8 @@ if __name__ == '__main__':
                         help="old snapshots per evaluation; 0 evaluates all")
     parser.add_argument("--fahc-log", type=str, default=None,
                         help="JSONL path for HCP choices, risks, KD, and MRR")
+    parser.add_argument("--fahc-diagnostics", action="store_true",
+                        help="also record the same stage diagnostics for original DGAR")
 
     # configuration for optimal parameters
     parser.add_argument("--grid-search", action='store_true', default=False,
@@ -1154,7 +1182,7 @@ if __name__ == '__main__':
 
     
     # diffusion
-    parser.add_argument("--diffu", default=True, type=bool,
+    parser.add_argument("--diffu", default=True, type=parse_bool,
                         help="do or don't reply")
     parser.add_argument("--hidden_size", default=200,
                         type=int, help="hidden size of model")
@@ -1180,27 +1208,28 @@ if __name__ == '__main__':
     parser.add_argument('--noise_schedule',
                         default='linear', help='Beta generation')
     parser.add_argument('--rescale_timesteps',
-                        default=False, help='rescal timesteps')
+                        type=parse_bool, default=False, help='rescal timesteps')
     parser.add_argument("--pattern_noise_radio", type=float, default=1)
     parser.add_argument("--max_len", type=int, default=64)
     parser.add_argument("--temperature_object", type=float, default=0.5)
     parser.add_argument("--his_max_len", type=int, default=128)
-    parser.add_argument('--vl',type=bool, default=False)
+    parser.add_argument('--vl',type=parse_bool, default=False)
 
     parser.add_argument('--history_sample', default=64,
-                        help='rescal timesteps')
+                        type=int, help='rescal timesteps')
     
-    parser.add_argument('--delete_score', default=False)
-    parser.add_argument('--delete_his_prompt', default=False)
-    parser.add_argument('--delete_temporal_attention', default=False)
-    parser.add_argument('--delete_feature_reply', default=False)
-    parser.add_argument('--mu', default=1)
-    parser.add_argument('--mu_r', default=1)
+    parser.add_argument('--delete_score', type=parse_bool, default=False)
+    parser.add_argument('--delete_his_prompt', type=parse_bool, default=False)
+    parser.add_argument('--delete_temporal_attention', type=parse_bool, default=False)
+    parser.add_argument('--delete_feature_reply', type=parse_bool, default=False)
+    parser.add_argument('--mu', type=float, default=1.0)
+    parser.add_argument('--mu_r', type=float, default=1.0)
     
     # parser.add_argument("--reply_batch_num", type=int, default=128)
     parser.add_argument("--heads", type=int, default=4,
                         help="perform layer normalization")
     parser.add_argument("--diffuc",  default="add",
+                        type=lambda value: value if value in ("add", "Linear") else parse_bool(value),
                         help="perform layer normalization")
     parser.add_argument('--classifier_scale', type=float,
                         default=1, help='梯度权重')
@@ -1221,7 +1250,11 @@ if __name__ == '__main__':
     parser.add_argument("--accumulation_steps", type=int,
                         default=2, help="norm to clip gradient to")
 
-    args = parser.parse_args()
+    return parser
+
+
+if __name__ == '__main__':
+    args = build_arg_parser().parse_args()
     print(args)
     fitlog.set_log_dir("logs/")         # 设定日志存储的目录
     fitlog.add_hyper(args)
@@ -1260,15 +1293,11 @@ if __name__ == '__main__':
             print(grid_entry)
             o_f.write("\t".join([str(_) for _ in grid_entry]) + "\n")
             # def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=None):
-            mrr, hits, ranks = run_experiment(
-                args, grid_entry[0], grid_entry[1], grid_entry[2], grid_entry[3])
-            print("MRR (raw): {:.6f}".format(mrr))
-            o_f.write("MRR (raw): {:.6f}\n".format(mrr))
-            for hit in hits:
-                avg_count = torch.mean((ranks <= hit).float())
-                print("Hits (raw) @ {}: {:.6f}".format(hit, avg_count.item()))
-                o_f.write(
-                    "Hits (raw) @ {}: {:.6f}\n".format(hit, avg_count.item()))
+            mrr_raw, mrr_filtered, _, _ = run_experiment(
+                copy.deepcopy(args), grid_entry[0], grid_entry[1], grid_entry[2], grid_entry[3])
+            print("MRR (raw): {:.6f}; MRR (filtered): {:.6f}".format(mrr_raw, mrr_filtered))
+            o_f.write("MRR (raw): {:.6f}; MRR (filtered): {:.6f}\n".format(mrr_raw, mrr_filtered))
+            o_f.close()
     # single run
     else:
         run_experiment(args)

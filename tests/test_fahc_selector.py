@@ -66,39 +66,68 @@ class FAHCSelectorTests(unittest.TestCase):
         candidates = [HCPCandidate(0, ((0, 0, 1),)),
                       HCPCandidate(1, ((0, 2, 1),)),
                       HCPCandidate(2, ((0, 1, 1),))]
-        raw = select_hcp(candidates, 2, mode="coverage", entity_weight=0)
+        raw = select_hcp(candidates, 2, mode="coverage", entity_weight=0,
+                         rng=random.Random(1))
         canonical = select_hcp(candidates, 2, mode="coverage",
-                               entity_weight=0, relation_modulus=2)
+                               entity_weight=0, relation_modulus=2,
+                               rng=random.Random(1))
         self.assertEqual(raw.indices, (0, 1))
         self.assertEqual(canonical.indices, (0, 2))
 
-    def test_fact_cap_deduplicates_and_round_robins(self):
+    def test_fact_cap_deduplicates_full_candidates(self):
         candidates = [
             HCPCandidate(0, ((1, 1, 2), (2, 1, 3))),
             HCPCandidate(1, ((1, 1, 2), (4, 2, 5), (6, 2, 7))),
         ]
-        result = select_hcp(candidates, 2, mode="recent", fact_budget=3)
+        selected = select_hcp(candidates, 2, mode="recent")
+        result = materialize_replay(selected, candidates, fact_budget=3, seed=7)
         self.assertEqual(len(result.indices), 2)
-        self.assertEqual(result.triples, ((1, 1, 2), (2, 1, 3), (4, 2, 5)))
         self.assertEqual(len(set(result.triples)), 3)
+        self.assertTrue(set(result.triples).issubset(set(selected.triples)))
+        self.assertEqual(result.triples,
+                         materialize_replay(selected, candidates, 3, 7).triples)
         self.assertEqual(result.nonempty_count, 2)
         self.assertEqual(result.fact_count, 3)
 
-    def test_budget_preserves_every_scored_fact_and_fills_remaining_slots(self):
+    def test_round_robin_gives_each_slice_a_share_of_budget(self):
+        candidates = [
+            HCPCandidate(0, tuple((0, 0, object_id) for object_id in range(10))),
+            HCPCandidate(1, tuple((1, 1, object_id) for object_id in range(10))),
+        ]
+        chosen = select_hcp(candidates, k=2, mode="recent")
+        replay = materialize_replay(chosen, candidates, fact_budget=5, seed=11)
+        counts = [sum(subject == index for subject, _, _ in replay.triples)
+                  for index in (0, 1)]
+        self.assertEqual(sorted(counts), [2, 3])
+
+    def test_duplicate_slices_can_underfill_the_budget(self):
+        candidates = [HCPCandidate(0, ((1, 0, 2),)),
+                      HCPCandidate(1, ((1, 0, 2),)),
+                      HCPCandidate(2, ())]
+        chosen = select_hcp(candidates, k=3, mode="recent")
+        replay = materialize_replay(chosen, candidates, fact_budget=8, seed=5)
+        self.assertEqual(len(replay.indices), 3)
+        self.assertEqual(replay.nonempty_count, 2)
+        self.assertEqual(replay.fact_count, 1)
+
+    def test_full_hcp_can_be_scored_before_smaller_replay_cap(self):
         full = [
             HCPCandidate(0, tuple((0, 0, object_id) for object_id in range(5))),
             HCPCandidate(1, tuple((1, 1, object_id) for object_id in range(5))),
         ]
-        scored = sample_scoring_candidates(full, k=2, fact_budget=5, seed=11)
-        self.assertEqual([len(candidate.triples) for candidate in scored], [2, 2])
-        chosen = select_hcp(scored, k=2, mode="recent")
+        chosen = select_hcp(full, k=2, mode="recent")
+        self.assertEqual(chosen.fact_count, 10)
         replay = materialize_replay(chosen, full, fact_budget=5, seed=11)
         self.assertEqual(replay.fact_count, 5)
-        self.assertTrue(set(chosen.triples).issubset(set(replay.triples)))
+        self.assertTrue(set(replay.triples).issubset(set(chosen.triples)))
         self.assertEqual(replay.indices, chosen.indices)
         self.assertEqual(
             replay.triples,
             materialize_replay(chosen, full, fact_budget=5, seed=11).triples)
+        # The deprecated quota helper is still available for explicit
+        # scoring-cost experiments, but it is not used by main training.
+        scored = sample_scoring_candidates(full, k=2, fact_budget=5, seed=11)
+        self.assertEqual([len(candidate.triples) for candidate in scored], [2, 2])
         with self.assertRaises(ValueError):
             sample_scoring_candidates(full, k=2, fact_budget=1, seed=11)
 
@@ -109,9 +138,22 @@ class FAHCSelectorTests(unittest.TestCase):
             HCPCandidate(2, ()),
         ]
         result = select_hcp(candidates, 2, {1: 0.0}, mode="risk")
-        self.assertEqual(result.indices, (1, 0))
+        self.assertEqual(result.indices[0], 1)
+        self.assertIn(result.indices[1], (0, 2))
         self.assertEqual(result.nonempty_count, 1)
         self.assertEqual(result.fact_count, 1)
+
+    def test_equal_risks_have_seeded_unbiased_ties(self):
+        candidates = [HCPCandidate(i, ((i, 0, i + 1),)) for i in range(6)]
+        risks = {i: 0.0 for i in range(6)}
+        choices = [select_hcp(candidates, 2, risks, mode="risk",
+                              rng=random.Random(seed)).indices
+                   for seed in range(12)]
+        self.assertGreater(len(set(choices)), 1)
+        self.assertEqual(choices[3], select_hcp(
+            candidates, 2, risks, mode="risk", rng=random.Random(3)).indices)
+        self.assertEqual(select_hcp(candidates, 2, risks, mode="risk").indices,
+                         select_hcp(candidates, 2, risks, mode="risk").indices)
 
 
 if __name__ == "__main__":

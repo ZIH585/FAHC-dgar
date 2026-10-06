@@ -17,7 +17,32 @@ class EntityDecoder(nn.Module):
         return query @ embedding.T
 
 
+class PredictDecoder(nn.Module):
+    def forward(self, embedding, relation_embedding, triples, mode="test"):
+        return embedding.new_zeros((len(triples), len(embedding)))
+
+
 class TeacherKDTest(unittest.TestCase):
+    def test_predict_uses_configured_linear_fusion(self):
+        model = RecurrentRGCN.__new__(RecurrentRGCN)
+        nn.Module.__init__(model)
+        model.args = SimpleNamespace(diffuc="Linear")
+        model.num_rels = 1
+        model.layer_norm = False
+        model.decoder_ob = PredictDecoder()
+        model.rdecoder = PredictDecoder()
+        entities = torch.zeros((3, 2))
+        relations = torch.zeros((2, 2))
+        model.forward = Mock(return_value=([entities], None, relations, [], []))
+        triples = torch.tensor([[0, 0, 1]], dtype=torch.long)
+        features = torch.zeros((1, 3, 2))
+
+        model.predict([object()], 1, None, triples, features,
+                      features[:, -1, :], triples, False)
+
+        self.assertEqual(model.forward.call_args.kwargs["diffu_rep"], "Linear")
+        self.assertIs(model.forward.call_args.kwargs["model_output"], features)
+
     def test_correct_confident_teacher_only_and_student_gradient(self):
         student = torch.tensor([[1.0, 0.0, -1.0],
                                 [0.0, 1.0, -1.0],

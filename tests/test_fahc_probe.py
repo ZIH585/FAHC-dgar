@@ -1,6 +1,7 @@
 import copy
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -53,10 +54,12 @@ class ProbeIntegrationTest(unittest.TestCase):
         saved = copy.deepcopy(model.state_dict())
         rng = torch.get_rng_state().clone()
 
-        risks = probe_hcp_risks(
-            model, teacher, candidates, triples, [graph], None, False,
-            task_weight=0.7, learning_rate=0.01, grad_norm=1.0,
-            steps=2, score_batch_size=2)
+        with patch.object(torch.optim.Adam, "step", return_value=None) as step:
+            risks = probe_hcp_risks(
+                model, teacher, candidates, triples, [graph], None, False,
+                task_weight=0.7, learning_rate=0.01, grad_norm=1.0,
+                steps=2, score_batch_size=2)
+        self.assertEqual(step.call_count, 2)
 
         self.assertEqual(set(risks), {0, 1})
         self.assertTrue(all(np.isfinite(value) and value >= 0
@@ -64,6 +67,8 @@ class ProbeIntegrationTest(unittest.TestCase):
         for key, value in saved.items():
             self.assertTrue(torch.equal(value, model.state_dict()[key]), key)
         self.assertTrue(torch.equal(rng, torch.get_rng_state()))
+        self.assertTrue(all(parameter.grad is None
+                            for parameter in model.parameters()))
 
         replay = triples
         chunks = teacher_replay_logits(
@@ -75,8 +80,11 @@ class ProbeIntegrationTest(unittest.TestCase):
             temperature=2.0, confidence=0.0)
         self.assertTrue(torch.isfinite(loss))
         loss.backward()
-        self.assertTrue(any(parameter.grad is not None
-                            for parameter in model.parameters()))
+        gradients = [parameter.grad for parameter in model.parameters()
+                     if parameter.grad is not None]
+        self.assertTrue(gradients)
+        self.assertTrue(all(torch.isfinite(gradient).all()
+                            for gradient in gradients))
 
 
 if __name__ == "__main__":

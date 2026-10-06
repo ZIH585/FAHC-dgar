@@ -54,12 +54,12 @@ class SelectionResult:
 def sample_scoring_candidates(
     candidates: Sequence[HCPCandidate], k: int, fact_budget: int, seed: int
 ) -> list[HCPCandidate]:
-    """Sample a guaranteed replay quota per candidate before risk scoring.
+    """Deprecated approximation: sample a replay quota per candidate.
 
-    The quota is floor(budget / min(k, candidate_count)). Thus every fact
-    considered by the risk and coverage selector can be retained after the
-    final k choices. Facts are sampled with independent deterministic seeds
-    per snapshot, avoiding a preference for low entity or relation IDs.
+    This changes the proposed risk and coverage objective because selection
+    only sees sampled facts. FAHC training scores complete HCP candidates and
+    applies the separate replay cap *after* time-slice selection. Retained for
+    explicit scoring-cost experiments and older callers.
     """
     if k < 1 or fact_budget < k:
         raise ValueError("a controlled HCP run needs k >= 1 and fact_budget >= k")
@@ -81,12 +81,12 @@ def materialize_replay(
     selection: SelectionResult, full_candidates: Sequence[HCPCandidate],
     fact_budget: int, seed: int
 ) -> SelectionResult:
-    """Keep every scored fact, then fill remaining replay capacity fairly.
+    """Cap the unique fact union of selected full HCPs after selection.
 
-    Extra facts cannot influence selection, but they can use the remaining
-    fact budget. The fill order cycles through selected slices and shuffles
-    each slice reproducibly. This avoids dropping high-risk scored facts or
-    favoring the smallest triple IDs when the total union exceeds the cap.
+    Each selected time slice receives an independently seeded fact shuffle.
+    A seeded shuffle of slice order resolves the final incomplete round. The
+    selection risks and coverage remain based on complete HCPs; the replay
+    budget does not silently alter the time-slice objective.
     """
     if fact_budget < 0:
         raise ValueError("fact_budget must be nonnegative")
@@ -95,30 +95,9 @@ def materialize_replay(
         raise ValueError("candidate time indices must be distinct")
     if any(index not in by_index for index in selection.indices):
         raise ValueError("selected HCP is absent from full candidates")
-    replay = list(dict.fromkeys(
-        triple for candidate in selection.selected for triple in candidate.triples))
-    if len(replay) > fact_budget:
-        raise ValueError("scored facts exceed the replay budget")
-    seen = set(replay)
-    remaining = []
-    for index in selection.indices:
-        facts = [triple for triple in by_index[index].triples if triple not in seen]
-        random.Random(f"{seed}:{index}:fill").shuffle(facts)
-        remaining.append(iter(facts))
-    while len(replay) < fact_budget:
-        progressed = False
-        for iterator in remaining:
-            for triple in iterator:
-                if triple not in seen:
-                    seen.add(triple)
-                    replay.append(triple)
-                    progressed = True
-                    break
-            if len(replay) == fact_budget:
-                break
-        if not progressed:
-            break
-    return SelectionResult(selection.indices, tuple(replay),
+    selected_full = [by_index[index] for index in selection.indices]
+    replay = _budgeted_union(selected_full, fact_budget, seed)
+    return SelectionResult(selection.indices, replay,
                            selection.selected, selection.score_by_index)
 
 
@@ -216,7 +195,7 @@ def positive_loss_increase(
 
 
 def _budgeted_union(
-    selected: Sequence[HCPCandidate], fact_budget: Optional[int]
+    selected: Sequence[HCPCandidate], fact_budget: Optional[int], seed: int = 0
 ) -> Tuple[Triple, ...]:
     if fact_budget is None:
         return tuple(sorted({triple for candidate in selected for triple in candidate.triples}))
@@ -224,17 +203,21 @@ def _budgeted_union(
         raise ValueError("fact_budget must be nonnegative")
     if fact_budget == 0:
         return ()
-    # Round-robin prevents one large HCP from consuming the entire budget.
+    # Shuffle within each slice and randomize which slices receive the extra
+    # fact in a partial round. Duplicate triples across slices count once.
+    selected = list(selected)
+    random.Random(f"{seed}:slice-order").shuffle(selected)
+    streams = []
+    for candidate in selected:
+        facts = list(candidate.triples)
+        random.Random(f"{seed}:{candidate.time_index}:fill").shuffle(facts)
+        streams.append(iter(facts))
     result = []
     seen = set()
-    positions = [0] * len(selected)
     while len(result) < fact_budget:
         progressed = False
-        for offset, candidate in enumerate(selected):
-            facts = candidate.triples
-            while positions[offset] < len(facts):
-                triple = facts[positions[offset]]
-                positions[offset] += 1
+        for stream in streams:
+            for triple in stream:
                 if triple not in seen:
                     seen.add(triple)
                     result.append(triple)
@@ -311,6 +294,7 @@ def select_hcp(
     else:
         use_risk = mode in {"risk+coverage", "risk"}
         use_coverage = mode in {"risk+coverage", "coverage"}
+        tie_rng = rng if rng is not None else random.Random(0)
         if use_risk and risks is None:
             raise ValueError("risk-based selection requires per-candidate risks")
         risk_values = {}
@@ -341,8 +325,8 @@ def select_hcp(
         selected = []
         scores = {}
         for _ in range(count):
-            best = None
             best_score = -math.inf
+            tied = []
             # Empty HCPs carry no replay facts, so fill with them only after
             # exhausting nonempty candidates. This still returns k indices.
             active = [candidate for candidate in remaining if candidate.triples]
@@ -357,7 +341,11 @@ def select_hcp(
                     )
                 score = risk_values[index] + eta * coverage_gain
                 if score > best_score:
-                    best, best_score = candidate, score
+                    best_score = score
+                    tied = [candidate]
+                elif score == best_score:
+                    tied.append(candidate)
+            best = tied[0] if len(tied) == 1 else tie_rng.choice(tied)
             selected.append(best)
             scores[best.time_index] = best_score
             remaining.remove(best)
