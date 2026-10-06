@@ -642,9 +642,12 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     "mode": args.hcp_selection,
                     "k": args.reply_batch,
                     "fact_budget": args.fahc_fact_budget,
+                    "fact_budget_active": args.hcp_selection != "original",
                     "selected_indices": [],
                     "selected_nonempty_count": 0,
+                    "selected_full_fact_count": 0,
                     "selected_fact_count": 0,
+                    "replay_retained_fraction": None,
                     "probe_steps": 0,
                 }
                 if args.hcp_selection != "original" and train_sample_num > 1:
@@ -692,10 +695,30 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                         rng=selector_rng,
                         entity_weight=args.fahc_entity_weight,
                         relation_modulus=num_rels)
+                    full_fact_count = selected_hcp.fact_count
+                    greedy_gain = sum(selected_hcp.score_by_index.values())
+                    selected_risk = (sum(risks[candidate.time_index]
+                                         for candidate in selected_hcp.selected)
+                                     if risks is not None else None)
+                    selection_record.update({
+                        "selected_full_fact_count": full_fact_count,
+                        "selected_risk_sum": selected_risk,
+                        "selected_weighted_coverage_gain_sum": (
+                            greedy_gain - (selected_risk or 0.0)
+                            if args.hcp_selection in ("coverage", "risk+coverage")
+                            else None),
+                        "risk_share_of_greedy_gain": (
+                            selected_risk / greedy_gain
+                            if args.hcp_selection == "risk+coverage" and greedy_gain > 0
+                            else None),
+                    })
                     selected_hcp = materialize_replay(
                         selected_hcp, full_candidates,
                         args.fahc_fact_budget, score_seed)
                     selection_record.update({
+                        "replay_retained_fraction": (
+                            selected_hcp.fact_count / full_fact_count
+                            if full_fact_count else None),
                         "candidate_indices": candidate_indices,
                         "candidate_fact_counts": {
                             str(candidate.time_index): len(candidate.triples)
@@ -977,6 +1000,9 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 if diagnostics_enabled:
                     if args.hcp_selection == "original" and output_reply_triple is not None:
                         selection_record["selected_fact_count"] = len(output_reply_triple)
+                        selection_record["selected_full_fact_count"] = len(output_reply_triple)
+                        selection_record["replay_retained_fraction"] = (
+                            1.0 if len(output_reply_triple) else None)
                     selection_record["kd_weight"] = args.fahc_kd_weight
                     selection_record["kd_mean_loss"] = (
                         float(np.mean(kd_losses)) if kd_losses else None)

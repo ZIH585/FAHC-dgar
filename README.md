@@ -99,6 +99,15 @@ Controlled FAHC runs and `--fahc-diagnostics` require `--n-epochs 1`
 (the default). Repeating the entire timeline from its final checkpoint would
 give earlier stages knowledge from later snapshots.
 
+Budget diagnostics also record `selected_full_fact_count`,
+`replay_retained_fraction`, `selected_risk_sum`,
+`selected_weighted_coverage_gain_sum`, and `risk_share_of_greedy_gain`.
+`fact_budget_active=false` identifies the uncapped `original` path. A small
+budget such as 128 can remove most of DGAR's normal replay facts; compare with
+`random` at the same budget before attributing a drop to forgetting-aware
+selection. The first ICEWS14s run is analyzed in
+[docs/ICEWS14s_FAHC_DIAGNOSIS.md](docs/ICEWS14s_FAHC_DIAGNOSIS.md).
+
 History-only MRR is separate from DGAR's diffusion-conditioned validation
 MRR. By default, the diagnostic samples four evenly spaced older validation
 snapshots per stage. Set `--fahc-past-eval-samples 0` to evaluate all older
