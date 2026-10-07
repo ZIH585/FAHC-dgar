@@ -114,6 +114,7 @@ class FAHCFlowTest(unittest.TestCase):
         probe_observations = []
         selection_observations = []
         materialize_observations = []
+        final_evaluations = []
 
         class FakeEarlyStopping:
             def __init__(self, patience, verbose, path):
@@ -159,6 +160,13 @@ class FAHCFlowTest(unittest.TestCase):
             score = (0.9 if time_index == 1 else 0.8) if calls == 0 else 0.1
             return (torch.tensor(score),
                     [torch.tensor(0.5)] * 3, torch.tensor([1]))
+
+        def fake_final_test(*positional, **kwargs):
+            final_evaluations.append((positional, kwargs))
+            if getattr(args, "fahc_final_validation", False):
+                return (0.1, 0.4, 0.1, 0.2, "changed history", "changed output",
+                        [0.3, 0.5], [], [], [], [0.3], [], [], [])
+            return (0,) * 14
 
         validation_calls = {}
 
@@ -218,7 +226,7 @@ class FAHCFlowTest(unittest.TestCase):
             stack.enter_context(patch.object(main, "test_single",
                                              fake_test_single))
             stack.enter_context(patch.object(main, "test",
-                                             lambda *a, **kw: (0,) * 14))
+                                             fake_final_test))
             stack.enter_context(patch.object(main, "tqdm", lambda items: items))
             stack.enter_context(patch.object(main.torch, "load", fake_load))
             stack.enter_context(patch.object(torch.optim.Adam, "step",
@@ -242,7 +250,25 @@ class FAHCFlowTest(unittest.TestCase):
             result=result, checkpoints=checkpoint_store, load_paths=load_paths,
             features=features, probes=probe_observations,
             selections=selection_observations,
-            materializations=materialize_observations, records=records)
+            materializations=materialize_observations, records=records,
+            final_evaluations=final_evaluations)
+
+    def test_final_validation_uses_validation_labels_and_same_training_context(self):
+        args = self._args(mode="original", diagnostics=True)
+        args.fahc_final_validation = True
+        run = self._run(args)
+        self.assertEqual([kwargs["mode"] for _, kwargs in run.final_evaluations],
+                         ["test", "valid"])
+        first, second = run.final_evaluations
+        self.assertIs(first[1]["last_history"], second[1]["last_history"])
+        self.assertIs(first[1]["last_output"], second[1]["last_output"])
+        self.assertTrue(all(len(snapshot) == 1 for snapshot in second[0][3]))
+        self.assertTrue(all(snapshot[0, 2] == 9 for snapshot in second[0][3]))
+        record = next(record for record in run.records
+                      if record["event"] == "final_validation")
+        self.assertEqual(record["past_macro_filtered_entity_mrr"], 0.3)
+        self.assertEqual(record["current_filtered_entity_mrr"], 0.5)
+        self.assertEqual(record["filtered_entity_mrr"], 0.4)
 
     def test_t1_warmup_then_t2_full_hcp_selection_precedes_fact_cap(self):
         run = self._run(self._args())

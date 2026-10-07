@@ -13,7 +13,7 @@ from numbers import Integral, Real
 from pathlib import Path
 
 
-ALGORITHM_VERSION = "full-hcp-v2"
+ALGORITHM_VERSION = "full-hcp-v3"
 HCP_MODES = frozenset({"original", "random", "recent", "risk", "coverage",
                        "risk+coverage"})
 DIFFUSION_MODES = frozenset({"add", "Linear"})
@@ -145,7 +145,8 @@ def validate_args(args: object) -> None:
 
     if args.fahc_kd_weight > 0 and selection == "original":
         raise ValueError("use --hcp-selection random for budget-matched HCP-KD")
-    if (selection != "original" or getattr(args, "fahc_diagnostics", False)) and args.n_epochs != 1:
+    if (selection != "original" or getattr(args, "fahc_diagnostics", False)
+            or getattr(args, "fahc_final_validation", False)) and args.n_epochs != 1:
         raise ValueError("FAHC diagnostics require --n-epochs 1 to preserve chronological stages")
     if selection != "original":
         if args.reply_batch < 1 or args.fahc_fact_budget < args.reply_batch:
@@ -163,7 +164,7 @@ _SIGNATURE_EXCLUDE = frozenset({
     "gpu", "test", "grid_search", "tune", "run_analysis", "run_statistic",
     "multi_step", "topk", "num_k", "batch_size", "evaluate_every",
     "relation_evaluation", "test_history_len", "fahc_eval_every",
-    "fahc_past_eval_samples", "fahc_diagnostics", "fahc_log", "vl",
+    "fahc_past_eval_samples", "fahc_diagnostics", "fahc_final_validation", "fahc_log", "vl",
     "log_dir", "save_dir",
     "output_dir", "model_dir", "checkpoint_dir", "model_state_file",
     "diffu_model_state_file", "num_nodes", "num_rels",

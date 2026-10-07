@@ -31,7 +31,7 @@ from diffusion.fahc_selector import (load_hcp_candidates, materialize_replay,
                                      select_hcp)
 from src.fahc import (probe_hcp_risks, replay_kd_loss,
                       teacher_replay_logits)
-from src.fahc_config import (experiment_signature, parse_bool, validate_args)
+from src.fahc_config import (ALGORITHM_VERSION, experiment_signature, parse_bool, validate_args)
 from src.fahc_runtime import cpu_optimizer_state, isolated_rng
 from torch.optim import *
 
@@ -309,7 +309,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
         torch.cuda.manual_seed(args.seed)
 
     fahc_enabled = args.hcp_selection != "original" or args.fahc_kd_weight > 0
-    diagnostics_enabled = fahc_enabled or args.fahc_diagnostics
+    diagnostics_enabled = (fahc_enabled or args.fahc_diagnostics or
+                           getattr(args, "fahc_final_validation", False))
     if diagnostics_enabled and not args.test:
         log_path = (Path(args.fahc_log) if args.fahc_log else
                     Path(__file__).resolve().parents[1] / "logs" /
@@ -322,7 +323,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
         with log_path.open("a", encoding="utf-8") as log_file:
             log_file.write(json.dumps({
                 "event": "run_config", "run_id": run_id,
-                "algorithm_version": "full-hcp-v2", "settings_hash": settings_hash,
+                "algorithm_version": ALGORITHM_VERSION, "settings_hash": settings_hash,
                 "settings": vars(args).copy(),
                 "risk_context": "history_only_current_stage",
                 "coverage_context": "full_candidate_hcp",
@@ -1034,6 +1035,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     with log_path.open("a", encoding="utf-8") as log_file:
                         log_file.write(json.dumps(selection_record) + "\n")
 
+        final_training_history, final_training_output = last_history, last_output
+        print("\nFinal full-pipeline TEST\n")
         mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r, last_history, last_output,mrrs,h1s,h3s,h10s,m_,h1,h3,h10 = test(args,
                                                                                        model,
                                                                                        train_list+valid_list,
@@ -1050,6 +1053,42 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                                                                                        last_output=last_output,
                                                                                        static_graph_diffu=static_graph_diffu,
                                                                                        model_diffpre=model_diffpre)
+        if getattr(args, "fahc_final_validation", False):
+            with log_path.open("a", encoding="utf-8") as log_file:
+                log_file.write(json.dumps({
+                    "event": "final_test", "run_id": run_id,
+                    "filtered_entity_mrr": float(mrr_filter),
+                    "past_macro_filtered_entity_mrr": (
+                        float(np.mean(mrrs[:-1])) if len(mrrs) > 1 else None),
+                    "current_filtered_entity_mrr": (
+                        float(mrrs[-1]) if mrrs else None),
+                    "per_snapshot_filtered_entity_mrr": {
+                        index: float(value) for index, value in
+                        enumerate(mrrs, start=1)},
+                }) + "\n")
+            print("\nFinal full-pipeline VALIDATION (configuration selection)\n")
+            validation = test(
+                args, model, train_list + valid_list, valid_list,
+                num_rels, num_nodes, use_cuda, all_ans_list_valid,
+                all_ans_list_r_valid, model_state_file, static_graph,
+                mode="valid", last_history=final_training_history,
+                last_output=final_training_output,
+                static_graph_diffu=static_graph_diffu,
+                model_diffpre=model_diffpre)
+            per_snapshot = validation[6]
+            with log_path.open("a", encoding="utf-8") as log_file:
+                log_file.write(json.dumps({
+                    "event": "final_validation", "run_id": run_id,
+                    "filtered_entity_mrr": float(validation[1]),
+                    "past_macro_filtered_entity_mrr": (
+                        float(np.mean(per_snapshot[:-1]))
+                        if len(per_snapshot) > 1 else None),
+                    "current_filtered_entity_mrr": (
+                        float(per_snapshot[-1]) if per_snapshot else None),
+                    "per_snapshot_filtered_entity_mrr": {
+                        index: float(value) for index, value in
+                        enumerate(per_snapshot, start=1)},
+                }) + "\n")
         fitlog.finish()
         # pca(entity_old,entity_new,args.dataset,mrr_old,mrr_new)
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r
@@ -1197,6 +1236,8 @@ def build_arg_parser():
                         help="JSONL path for HCP choices, risks, KD, and MRR")
     parser.add_argument("--fahc-diagnostics", action="store_true",
                         help="also record the same stage diagnostics for original DGAR")
+    parser.add_argument("--fahc-final-validation", action="store_true",
+                        help="evaluate all validation snapshots with final DGAR inference for configuration selection")
 
     # configuration for optimal parameters
     parser.add_argument("--grid-search", action='store_true', default=False,

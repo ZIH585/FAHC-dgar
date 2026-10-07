@@ -3,3 +3,4 @@ __pycache__/
 logs/fahc_*.jsonl
 models/*-fahc-*
 diffu_models/*-fahc-*
+experiment_runs/

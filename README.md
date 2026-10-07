@@ -7,6 +7,32 @@ cd src
 python main.py --gpu 0 --dataset ICEWS14s
 ```
 
+## 推荐实验步骤
+
+完整中文方案、分阶段决策和后台运行命令见
+[docs/FAHC_EXPERIMENT_PLAN.md](docs/FAHC_EXPERIMENT_PLAN.md)。
+优先用 seed=1 比较 original、random B4096、risk+coverage B4096 eta0.1，
+均不加 KD。该参数是基于旧日志的候选方案，尚未验证提升。
+
+从仓库根目录校验命令，不训练、不访问 CUDA：
+
+```bash
+bash scripts/run_fahc_experiment.sh --dry-run A4096_E01 0 ICEWS14s 1 risk+coverage 4096 0.1 0
+```
+
+GPU 空闲后执行三组串行实验：
+
+```bash
+bash scripts/run_fahc_stage.sh core 0 ICEWS14s 1
+```
+
+运行器为每组隔离模型与日志，记录代码/数据/缓存指纹，保留失败退出码。
+默认汇总只导出验证结果；配置冻结后才能用 `--include-test` 导出测试成绩：
+
+```bash
+/data1/zihao/miniconda3/envs/dgar_env/bin/python scripts/summarize_fahc_runs.py experiment_runs --csv experiment_runs/summary.csv
+```
+
 ## FAHC-DGAR
 
 FAHC changes which historical context prompts (HCPs) DGAR replays. At stage
@@ -52,16 +78,17 @@ This is an auxiliary path; DGAR's diffusion-conditioned replay loss remains.
 ### Run comparable modes
 
 Use the same `--reply_batch`, `--fahc-fact-budget`, seed, and training
-configuration when comparing selection modes:
+configuration when comparing selection modes. The following smaller-cap
+ablation is separate from the large-cap diagnostic above; check actual counts:
 
 ```bash
 cd src
-python main.py --gpu 0 --dataset ICEWS14s --hcp-selection random --reply_batch 35 --fahc-fact-budget 128
-python main.py --gpu 0 --dataset ICEWS14s --hcp-selection recent --reply_batch 35 --fahc-fact-budget 128
-python main.py --gpu 0 --dataset ICEWS14s --hcp-selection risk --reply_batch 35 --fahc-fact-budget 128
-python main.py --gpu 0 --dataset ICEWS14s --hcp-selection coverage --reply_batch 35 --fahc-fact-budget 128
-python main.py --gpu 0 --dataset ICEWS14s --hcp-selection risk+coverage --reply_batch 35 --fahc-fact-budget 128
-python main.py --gpu 0 --dataset ICEWS14s --hcp-selection risk+coverage --reply_batch 35 --fahc-fact-budget 128 --fahc-kd-weight 0.1
+python main.py --gpu 0 --dataset ICEWS14s --hcp-selection random --reply_batch 35 --fahc-fact-budget 1024
+python main.py --gpu 0 --dataset ICEWS14s --hcp-selection recent --reply_batch 35 --fahc-fact-budget 1024
+python main.py --gpu 0 --dataset ICEWS14s --hcp-selection risk --reply_batch 35 --fahc-fact-budget 1024
+python main.py --gpu 0 --dataset ICEWS14s --hcp-selection coverage --reply_batch 35 --fahc-fact-budget 1024
+python main.py --gpu 0 --dataset ICEWS14s --hcp-selection risk+coverage --reply_batch 35 --fahc-fact-budget 1024
+python main.py --gpu 0 --dataset ICEWS14s --hcp-selection risk+coverage --reply_batch 35 --fahc-fact-budget 1024 --fahc-kd-weight 0.1
 ```
 
 `original` keeps the inherited random, uncapped DGAR HCP path. Use
@@ -93,8 +120,12 @@ metrics for `original` too. Validation and evaluation use the same fixed,
 isolated RNG policy in every mode, so their sampling does not consume
 training randomness. RGCN and diffusion models reload their optimizer
 moments with the matching best model checkpoints at stage boundaries.
-FAHC checkpoints carry a **v2 hash of the full effective training
+FAHC checkpoints carry a **v3 hash of the full effective training
 configuration** to separate runs with different settings.
+Version v3 canonicalizes slice order before budget materialization: the same
+selected HCP set and seed produce the same replay facts across selection modes.
+Earlier v2 results remain useful diagnostics, but formal ablations should use
+one version consistently.
 Controlled FAHC runs and `--fahc-diagnostics` require `--n-epochs 1`
 (the default). Repeating the entire timeline from its final checkpoint would
 give earlier stages knowledge from later snapshots.
@@ -115,6 +146,10 @@ snapshots, or `--fahc-eval-every N` to change how often the past is evaluated.
 The sampled set changes as time advances, so use all older snapshots for a
 comparable forgetting curve. The log's actual replay count should be checked
 when interpreting budget-matched ablations.
+`--fahc-final-validation` additionally runs the final DGAR inference path over
+all validation snapshots and writes `final_validation` to JSONL. It also
+exports the inherited final test metrics as `final_test`; these are separate
+from validation and are ignored by the default experiment summarizer.
 
 ### Data and storage scope
 

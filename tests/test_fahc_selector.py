@@ -6,6 +6,7 @@ from pathlib import Path
 
 from diffusion.fahc_selector import (
     HCPCandidate,
+    SelectionResult,
     eligible_history_indices,
     load_hcp_candidates,
     materialize_replay,
@@ -18,6 +19,16 @@ from diffusion.fahc_selector import (
 
 
 class FAHCSelectorTests(unittest.TestCase):
+    def test_replay_facts_depend_on_selected_set_not_ranking_order(self):
+        candidates = [HCPCandidate(i, tuple((i, 0, j) for j in range(10)))
+                      for i in range(3)]
+        ascending = SelectionResult((0, 1, 2), (), tuple(candidates), {})
+        descending = SelectionResult((2, 1, 0), (), tuple(reversed(candidates)), {})
+        for seed in range(8):
+            first = materialize_replay(ascending, candidates, 4, seed)
+            second = materialize_replay(descending, candidates, 4, seed)
+            self.assertEqual(first.triples, second.triples)
+
     def test_historical_range_and_candidate_pool(self):
         self.assertEqual(eligible_history_indices(2), [0])
         self.assertEqual(eligible_history_indices(5), [0, 1, 2, 3])

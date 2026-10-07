@@ -205,7 +205,10 @@ def _budgeted_union(
         return ()
     # Shuffle within each slice and randomize which slices receive the extra
     # fact in a partial round. Duplicate triples across slices count once.
-    selected = list(selected)
+    # Materialization depends on the selected set, not greedy ranking order.
+    # This also makes early stages (all available slices selected) identical
+    # across selection modes at the same budget and seed.
+    selected = sorted(selected, key=lambda candidate: candidate.time_index)
     random.Random(f"{seed}:slice-order").shuffle(selected)
     streams = []
     for candidate in selected:
