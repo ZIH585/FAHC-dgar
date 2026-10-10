@@ -1,0 +1,7 @@
+run,state,mode,seed,B,eta,KD,val_full_past_MRR,val_full_current_MRR,val_full_MRR,full_validation_complete,val_past_MRR,val_current_MRR,val_BWT,val_arrival_forgetting_pos,past_n,past_complete,replay_facts_median,retained_fraction_median,cap_reached_fraction,KD_active_fraction_median,wall_min
+ICEWS14s_A4096_E01_s1_20261010_220428_684238414_148672,finished,risk+coverage,1,4096,0.1,0.0,0.495972,0.68561,0.488243,True,0.39281,0.471129,0.038035,0.03208,363,True,1695,1.0,0,,67.75
+ICEWS14s_DGAR_s1_20261010_205017_588218678_142325,failed,original,1,4096,0.1,0.0,,,,,,,,,,,,,,,0.07
+ICEWS14s_DGAR_s1_20261010_205048_795772130_142516,failed,original,1,4096,0.1,0.0,,,,,,,,,,,,,,,0.05
+ICEWS14s_DGAR_s1_20261010_205225_196503824_142706,finished,original,1,4096,0.1,0.0,0.502472,0.661097,0.494343,True,0.400105,0.516131,0.033672,0.029852,363,True,,,,,70.23
+ICEWS14s_R4096_s1_20261010_210636_823759993_146370,failed,random,1,4096,0.1,0.0,,,,,,,,,,,,,,,0.27
+ICEWS14s_R4096_s1_20261010_211140_463083703_146913,finished,random,1,4096,0.1,0.0,0.501924,0.71333,0.494386,True,0.40321,0.519442,0.052017,0.026424,363,True,1604,1.0,0,,49.12
