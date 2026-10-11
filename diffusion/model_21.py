@@ -8,6 +8,7 @@ from diffusion.regcn import RGCNCell, RGCNBlockLayer
 import torch as th
 import random
 import pickle
+from pathlib import Path
 # from decoder import ConvTransE
 
 
@@ -168,7 +169,7 @@ class Att_Diffuse_model(nn.Module):
                 for i in reply_time_index:
                     current_query_history_triples.update(tuple(arr) for arr in train_list[i])
                 if len(current_query_history_triples)> args.reply_batch_num:
-                    current_query_history_triples=random.sample(current_query_history_triples, args.reply_batch_num)
+                    current_query_history_triples=random.sample(sorted(current_query_history_triples), args.reply_batch_num)
             else:
                 current_query_history_triples = set()
                 if train_sample_num-2<args.reply_batch:
@@ -178,7 +179,8 @@ class Att_Diffuse_model(nn.Module):
                 
                 for i in reply_time_index:
                     # if mode =='c':
-                    related_history=pickle.load(open("../data/{}/history_snap_v2/snap_{}.pkl".format(args.dataset,i),"rb"))
+                    with open(Path(args.data_root) / args.dataset / "history_snap_v2" / f"snap_{i}.pkl", "rb") as history_file:
+                        related_history = pickle.load(history_file)
                     if len(related_history) > 0:
                         for element in output_re:
                             if str(element[0]) in related_history.keys():
@@ -192,8 +194,9 @@ class Att_Diffuse_model(nn.Module):
         if args.diffuc:
             
             if  train_sample_num >= 2:
-                output_reply_triple = torch.tensor(list(current_query_history_triples)).cuda(
-                ) if use_cuda else torch.tensor(list(current_query_history_triples))
+                output_reply_triple = torch.as_tensor(
+                    sorted(current_query_history_triples), dtype=torch.long,
+                    device=output.device).reshape(-1, 3)
                 
                 if len(output_reply_triple)>0 and args.delete_feature_reply is False:
                     scores, diffu_rep, weights, t, _, ent_emb, noise, _, targets = model_diffpre(
@@ -227,8 +230,7 @@ class Att_Diffuse_model(nn.Module):
         embeding_dict = dict()
        
         entity_all, indices = torch.unique(entity_all, return_inverse=True)
-        ent_embeding = torch.zeros((self.num_ents, self.emb_dim)).to(
-            self.gpu) if use_cuda else torch.zeros(1)
+        ent_embeding = embeding.new_zeros((self.num_ents, self.emb_dim))
         
         for i, ent in enumerate(entity_all):
             ent_embeding[int(ent)] = s_o_embeding[indices == i].mean(dim=0)
@@ -240,17 +242,17 @@ class Att_Diffuse_model(nn.Module):
     def forward(self, sequence, tag, args, train_flag=True, use_cuda=True, static_graph=None, ct=None, model=None, history_glist=None, triples=None,model_output=None, targets=None):
         # initial_h, _=self.initial_h(static_graph)
         if self.use_static:
-            static_graph = static_graph.to(self.gpu)
+            static_graph = static_graph.to(self.emb_ent.device)
             static_graph.ndata['h'] = torch.cat(
                 (self.emb_ent, self.words_emb), dim=0)  # 演化得到的表示，和wordemb满足静态图约束
             self.statci_rgcn_layer(static_graph, [])
             static_emb = static_graph.ndata.pop('h')[:self.num_ents, :]
             static_emb = self.LayerNorm_static(static_emb)
-            padding = torch.zeros_like(static_emb[[-1]]).to(self.gpu)
+            padding = torch.zeros_like(static_emb[[-1]])
             initial_h = torch.concat([static_emb, padding], dim=0)
         else:
             initial_h = self.emb_ent
-            padding = torch.zeros_like(self.emb_ent[[-1]]).to(self.gpu)
+            padding = torch.zeros_like(self.emb_ent[[-1]])
             initial_h = torch.concat([initial_h, padding], dim=0)
             static_emb = None
             

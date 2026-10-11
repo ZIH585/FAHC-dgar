@@ -8,6 +8,8 @@ import copy
 import json
 import os
 import pickle
+from pathlib import Path
+from src.runtime import cpu_copy
 from collections import defaultdict
 # from copy import deepcopy
 
@@ -19,7 +21,7 @@ from collections import defaultdict
 def temp_func():
     return defaultdict(int)
 
-def get_history(data_list,n_r,dataset):
+def get_history(data_list,n_r,dataset, data_root="../data"):
 
     query_history=dict()
     query_er_history=dict()
@@ -49,7 +51,7 @@ def get_history(data_list,n_r,dataset):
                     query_er_history[str(train_sample_num)][str(element[0])][str(element[1])]=set()
             query_er_history[str(train_sample_num)][str(element[0])][str(element[1])].add(tuple(element))
             
-        file_path="../data/{}/history_snap_v2/snap_{}.pkl".format(dataset,train_sample_num)
+        file_path = Path(data_root) / dataset / "history_snap_v2" / f"snap_{train_sample_num}.pkl"
         os.makedirs(os.path.dirname(file_path), exist_ok=True)    
         with open(file_path,"wb") as file:
             pickle.dump(query_history[str(train_sample_num)],file)
@@ -171,8 +173,9 @@ def build_sub_graph(num_nodes, num_rels, triples, use_cuda, gpu):
     g.r_to_e = r_to_e
     g.r_len = r_len
     if use_cuda:
-        g = g.to(gpu) 
-        g.r_to_e = torch.from_numpy(np.array(r_to_e))
+        g = g.to(torch.device(f"cuda:{gpu}"))
+    g.r_to_e = torch.as_tensor(r_to_e, dtype=torch.long, device=g.device)
+    g.r_len, g.uniq_r = r_len, uniq_r
     return g
 
 def get_total_rank(test_triples, score, all_ans, eval_bz, rel_predict=0):
@@ -422,14 +425,14 @@ def slide_list(snapshots, k=1):
 
 
 
-def load_data(dataset, bfs_level=3, relabel=False):
+def load_data(dataset, bfs_level=3, relabel=False, data_root="../data"):
     if dataset in ['aifb', 'mutag', 'bgs', 'am']:
         return knwlgrh.load_entity(dataset, bfs_level, relabel)
     elif dataset in ['FB15k', 'wn18', 'FB15k-237']:
         return knwlgrh.load_link(dataset)
     elif dataset in ['ICEWS18', 'ICEWS14', "GDELT", "SMALL", "ICEWS14s", "ICEWS05-15","YAGO",
                      "WIKI"]:
-        return knwlgrh.load_from_local("../data", dataset)
+        return knwlgrh.load_from_local(str(data_root), dataset)
     else:
         raise ValueError('Unknown dataset: {}'.format(dataset))
 
@@ -671,7 +674,11 @@ class EarlyStopping:
         self.early_stop = False
         self.val_score_max = float('-inf')  # 初始化为负无穷，表示得分越高越好
 
-    def __call__(self, val_score, model):
+    def __call__(self, val_score, model, optimizer=None):
+        val_score = float(val_score)
+        if not np.isfinite(val_score):
+            raise ValueError("nonfinite validation score")
+        self._optimizer = optimizer
         # 监控验证集指标（得分越高越好）
         if self.best_score is None:
             self.best_score = val_score
@@ -693,4 +700,5 @@ class EarlyStopping:
         if self.verbose:
             self.trace_func(f"Validation score increased ({self.val_score_max:.6f} --> {val_score:.6f}).  Saving model ...")
         torch.save(model.state_dict(), self.path)
+        self.optimizer_state = cpu_copy(self._optimizer.state_dict()) if self._optimizer else None
         self.val_score_max = val_score

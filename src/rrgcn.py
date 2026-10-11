@@ -199,8 +199,7 @@ class RecurrentRGCN(nn.Module):
         #         embeding_dict[str(ent)]=s_o_embeding[i]
 
         entity_all, indices = torch.unique(entity_all, return_inverse=True)
-        ent_embeding = torch.zeros((self.num_ents, self.h_dim)).to(
-            self.gpu) if use_cuda else torch.zeros(1)
+        ent_embeding = embeding.new_zeros((self.num_ents, self.h_dim))
         # for i,ent in enumerate(entity_all):
         #     ent_embeding[int(ent)]=embeding_dict[str(ent)]
         for i, ent in enumerate(entity_all):
@@ -209,11 +208,14 @@ class RecurrentRGCN(nn.Module):
         return entity_all, ent_embeding
 
     def forward(self, g_list, static_graph, use_cuda, model_output=None,model_output_x_t=None, tag=None, diffu_rep="add", output_reply_triple=None, current_query_history_graph=None):
+        if model_output is not None and len(model_output) == 0:
+            model_output = None
         gate_list = []
         degree_list = []
+        device = self.dynamic_emb.device
         # self.h,static_emb =self.initial_sh(static_graph)
         if self.use_static:
-            static_graph = static_graph.to(self.gpu)
+            static_graph = static_graph.to(device)
             static_graph.ndata['h'] = torch.cat(
                 (self.dynamic_emb, self.words_emb), dim=0)  # 演化得到的表示，和wordemb满足静态图约束
             self.statci_rgcn_layer(static_graph, [])
@@ -235,10 +237,9 @@ class RecurrentRGCN(nn.Module):
                 tag, model_output, use_cuda)
 
         for i, g in enumerate(g_list):
-            g = g.to(self.gpu)
+            g = g.to(device)
             temp_e = self.h[g.r_to_e]
-            x_input = torch.zeros(self.num_rels * 2, self.h_dim).float().cuda(
-            ) if use_cuda else torch.zeros(self.num_rels * 2, self.h_dim).float()
+            x_input = self.dynamic_emb.new_zeros((self.num_rels * 2, self.h_dim))
             for span, r_idx in zip(g.r_len, g.uniq_r):
                 x = temp_e[span[0]:span[1], :]
                 x_mean = torch.mean(x, dim=0, keepdim=True)
@@ -284,7 +285,9 @@ class RecurrentRGCN(nn.Module):
 
 
             evolve_embs, _, r_emb, _, _ = self.forward(
-                test_graph, static_graph, use_cuda, model_output=model_output,model_output_x_t=model_output_o, tag=tag, current_query_history_graph=current_query_history_triples)
+                test_graph, static_graph, use_cuda, model_output=model_output,model_output_x_t=model_output_o, tag=tag,
+                diffu_rep=getattr(self.args, "diffuc", "add"),
+                current_query_history_graph=current_query_history_triples)
             embedding = F.normalize(
                 evolve_embs[-1]) if self.layer_norm else evolve_embs[-1]
 
@@ -294,11 +297,11 @@ class RecurrentRGCN(nn.Module):
                 embedding, r_emb, all_triples, mode="test")
             return all_triples, score, score_rel
     def loss_of_reply(self, e_embedding, r_embedding, reply,mode='e'):
-        if mode is 'e':
+        if mode == 'e':
             scores_ob = self.decoder_ob.forward(
                     e_embedding, r_embedding, reply).view(-1, self.num_ents)
             loss = self.loss_e(scores_ob, reply[:, 2])
-        elif mode is 'r':
+        elif mode == 'r':
             score_rel = self.rdecoder.forward(
                 e_embedding, r_embedding, reply, mode="train").view(-1, 2 * self.num_rels)
             loss = self.loss_r(score_rel, reply[:, 1])
@@ -325,10 +328,8 @@ class RecurrentRGCN(nn.Module):
         inverse_triples[~mask, 1] = inverse_triples[~mask, 1] - self.num_rels
         
         all_triples = torch.cat([triples, inverse_triples])
-        all_triples = all_triples.to(self.gpu)
         return all_triples
-    
-    
+
     def get_loss(self, glist, triples, static_graph, use_cuda,known_entities=None,negative_rate=None, model_output=None,model_output_x_t=None,tag=None, diffuc=None, output_reply_triple=None, current_query_history_graph=None,mode=None,inc_model=None):
         """
         :param glist:
@@ -337,19 +338,18 @@ class RecurrentRGCN(nn.Module):
         :param use_cuda:
         :return:
         """
-        loss_ent = torch.zeros(1).cuda().to(
-            self.gpu) if use_cuda else torch.zeros(1)
-        loss_rel = torch.zeros(1).cuda().to(
-            self.gpu) if use_cuda else torch.zeros(1)
-        loss_static = torch.zeros(1).cuda().to(
-            self.gpu) if use_cuda else torch.zeros(1)
-        loss_Reply = torch.zeros(1).cuda().to(
-            self.gpu) if use_cuda else torch.zeros(1)
+        if model_output is not None and len(model_output) == 0:
+            model_output = None
+        loss_ent = self.dynamic_emb.new_zeros(1)
+        loss_rel = self.dynamic_emb.new_zeros(1)
+        loss_static = self.dynamic_emb.new_zeros(1)
+        loss_Reply = self.dynamic_emb.new_zeros(1)
         
         if model_output is not None:
             entity_all, ent_embeding = self.select_entity(
                 tag, model_output, use_cuda)
-            output_reply_triple = torch.tensor(output_reply_triple).cuda()
+            output_reply_triple = torch.as_tensor(
+                output_reply_triple, dtype=torch.long, device=triples.device)
             all_output_reply_triple=self.get_all_triple(output_reply_triple)
 
         all_triples=self.get_all_triple(triples)
@@ -385,12 +385,14 @@ class RecurrentRGCN(nn.Module):
                     if self.layer_norm:
                         sim_matrix = torch.sum(
                             static_emb * F.normalize(evolve_emb), dim=1)
+                        valid_static = torch.ones_like(sim_matrix, dtype=torch.bool)
                     else:
-                        sim_matrix = torch.sum(static_emb * evolve_emb, dim=1)
-                        c = torch.norm(static_emb, p=2, dim=1) * \
-                            torch.norm(evolve_emb, p=2, dim=1)
-                        sim_matrix = sim_matrix / c
-                    mask = (math.cos(step) - sim_matrix) > 0
+                        norm_product = (torch.norm(static_emb, p=2, dim=1)
+                                        * torch.norm(evolve_emb, p=2, dim=1))
+                        sim_matrix = torch.sum(static_emb * evolve_emb, dim=1) \
+                            / norm_product.clamp_min(1e-8)
+                        valid_static = norm_product > 0
+                    mask = valid_static & ((math.cos(step) - sim_matrix) > 0)
                     loss_static += self.weight * \
                         torch.sum(torch.masked_select(
                             math.cos(step) - sim_matrix, mask))
@@ -400,12 +402,14 @@ class RecurrentRGCN(nn.Module):
                     if self.layer_norm:
                         sim_matrix = torch.sum(
                             static_emb * F.normalize(evolve_emb), dim=1)
+                        valid_static = torch.ones_like(sim_matrix, dtype=torch.bool)
                     else:
-                        sim_matrix = torch.sum(static_emb * evolve_emb, dim=1)
-                        c = torch.norm(static_emb, p=2, dim=1) * \
-                            torch.norm(evolve_emb, p=2, dim=1)
-                        sim_matrix = sim_matrix / c
-                    mask = (math.cos(step) - sim_matrix) > 0
+                        norm_product = (torch.norm(static_emb, p=2, dim=1)
+                                        * torch.norm(evolve_emb, p=2, dim=1))
+                        sim_matrix = torch.sum(static_emb * evolve_emb, dim=1) \
+                            / norm_product.clamp_min(1e-8)
+                        valid_static = norm_product > 0
+                    mask = valid_static & ((math.cos(step) - sim_matrix) > 0)
                     loss_static += self.weight * \
                         torch.sum(torch.masked_select(
                             math.cos(step) - sim_matrix, mask))
@@ -436,7 +440,7 @@ class Initial_h(nn.Module):
 
     def forward(self,static_graph):
         # if self.use_static:
-        static_graph = static_graph.to(self.gpu)
+        static_graph = static_graph.to(self.dynamic_emb.device)
         static_graph.ndata['h'] = torch.cat(
             (self.dynamic_emb, self.words_emb), dim=0)  # 演化得到的表示，和wordemb满足静态图约束
         self.statci_rgcn_layer(static_graph, [])

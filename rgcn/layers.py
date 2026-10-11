@@ -224,13 +224,12 @@ class UnionRGCNLayer(nn.Module):
         # self.sub = sub
         # self.ob = ob
         if self.self_loop:
-            #loop_message = torch.mm(g.ndata['h'], self.loop_weight)
-            # masked_index = torch.masked_select(torch.arange(0, g.number_of_nodes(), dtype=torch.long), (g.in_degrees(range(g.number_of_nodes())) > 0))
-            masked_index = torch.masked_select(
-                torch.arange(0, g.number_of_nodes(), dtype=torch.long).cuda(),
-                (g.in_degrees(range(g.number_of_nodes())) > 0))
-            loop_message = torch.mm(g.ndata['h'], self.evolve_loop_weight)
-            loop_message[masked_index, :] = torch.mm(g.ndata['h'], self.loop_weight)[masked_index, :]
+            h = g.ndata['h']
+            has_incoming = g.in_degrees().to(h.device).gt(0).unsqueeze(1)
+            loop_message = torch.where(
+                has_incoming,
+                torch.mm(h, self.loop_weight),
+                torch.mm(h, self.evolve_loop_weight))
         if len(prev_h) != 0 and self.skip_connect:
             skip_weight = F.sigmoid(torch.mm(prev_h, self.skip_connect_weight) + self.skip_connect_bias)     # 使用sigmoid，让值在0~1
 
