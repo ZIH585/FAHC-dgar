@@ -33,6 +33,8 @@ from src.fahc import (probe_hcp_risks, replay_kd_loss,
                       teacher_replay_logits)
 from src.fahc_config import (ALGORITHM_VERSION, experiment_signature, parse_bool, validate_args)
 from src.fahc_runtime import cpu_optimizer_state, isolated_rng
+from src.fahc_mechanism import (begin_mechanism_diagnostic,
+                                 finish_mechanism_diagnostic)
 from torch.optim import *
 
 import copy
@@ -297,6 +299,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
         if value is not None:
             setattr(args, name, value)
     validate_args(args)
+    mechanism_stages = getattr(args, "fahc_mechanism_stages", ())
     settings_hash = experiment_signature(args)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + settings_hash
     random.seed(args.seed)
@@ -323,6 +326,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
         with log_path.open("a", encoding="utf-8") as log_file:
             log_file.write(json.dumps({
                 "event": "run_config", "run_id": run_id,
+                "run_kind": "mechanism_prefix" if mechanism_stages else "full_experiment",
                 "algorithm_version": ALGORITHM_VERSION, "settings_hash": settings_hash,
                 "settings": vars(args).copy(),
                 "risk_context": "history_only_current_stage",
@@ -345,6 +349,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     data_list.extend(valid_list)
     data_list.extend(test_list)
     train_list,valid_list,test_list = utils.spilt_data(data_list)
+    if mechanism_stages and max(mechanism_stages) >= len(train_list):
+        raise ValueError("mechanism snapshot indices must be smaller than the dataset snapshot count")
     data_history="../data/{}/history_snap_v2/".format(args.dataset)
     if not os.path.exists(data_history):
         get_history(train_list,data.num_rels,args.dataset)
@@ -604,6 +610,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
             last_output = None
 
             idx = [_ for _ in range(len(train_list))]
+            if mechanism_stages:
+                idx = idx[:max(mechanism_stages) + 1]
             
             for batch_idx, train_sample_num in enumerate(tqdm(idx)):
                 if train_sample_num == 0:
@@ -635,6 +643,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     del checkpoint
 
                 selected_hcp = None
+                pending_mechanism = None
                 selection_start = time.perf_counter()
                 selection_record = {
                     "event": "stage", "run_id": run_id,
@@ -669,6 +678,11 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     # Risk and coverage describe the complete HCP. The replay
                     # budget is applied uniformly only after choosing slices.
                     candidates = full_candidates
+                    if train_sample_num in mechanism_stages:
+                        pending_mechanism = begin_mechanism_diagnostic(
+                            args, train_sample_num, model, model_repre,
+                            candidates, output, history_glist, static_graph,
+                            use_cuda, optimizer)
                     risks = None
                     if args.hcp_selection in ("risk", "risk+coverage"):
                         probe_output = output
@@ -772,6 +786,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 early_stopping = EarlyStopping(patience=5, verbose=False, path=model_state_file)
                 early_stopping_dif = EarlyStopping(patience=5, verbose=False, path=diffu_model_state_file)
                 best_optimizer_state = None
+                best_rgcn_step = None
                 best_diffu_optimizer_state = None
                 if diffu_rep is not None:
                     model_output_o=diffu_rep[:,-1,:]
@@ -851,12 +866,15 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     early_stopping(mrr,model)
                     if previous_best is None or mrr >= previous_best + early_stopping.delta:
                         best_optimizer_state = cpu_optimizer_state(optimizer)
+                        best_rgcn_step = epoch + 1
                     if early_stopping.early_stop:
                         break
+
+                selection_record["rgcn_steps"] = epoch + 1
                     
                           
                 
-                if train_sample_num==idx[-1]:
+                if train_sample_num==idx[-1] and not mechanism_stages:
                     diffu_rep_test=None
                     output_reply_triple_test=None
                     test_triples_input = torch.LongTensor(
@@ -998,6 +1016,22 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
 
                 del checkpoint
 
+                if pending_mechanism is not None:
+                    mechanism_record = finish_mechanism_diagnostic(
+                        args, model, pending_mechanism, history_glist,
+                        static_graph, use_cuda)
+                    mechanism_record.update(run_id=run_id,
+                                            actual_rgcn_steps=selection_record["rgcn_steps"],
+                                            best_rgcn_step=best_rgcn_step)
+                    with log_path.open("a", encoding="utf-8") as log_file:
+                        log_file.write(json.dumps(mechanism_record, allow_nan=False) + "\n")
+                    for target in ("current_only", "dgar_history_only"):
+                        values = mechanism_record["metrics"][target]
+                        print("Mechanism snapshot={} target={} stability={} prediction={} lift={}".format(
+                            train_sample_num, target, values["spearman_ab"],
+                            values["spearman_mean_observed"], values["observed_topk_lift"]),
+                            flush=True)
+
                 if diagnostics_enabled:
                     if args.hcp_selection == "original" and output_reply_triple is not None:
                         selection_record["selected_fact_count"] = len(output_reply_triple)
@@ -1034,6 +1068,16 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                             float(np.mean(forgetting)) if forgetting else None)
                     with log_path.open("a", encoding="utf-8") as log_file:
                         log_file.write(json.dumps(selection_record) + "\n")
+
+        if mechanism_stages:
+            with log_path.open("a", encoding="utf-8") as log_file:
+                log_file.write(json.dumps({"event": "mechanism_complete", "run_id": run_id,
+                                           "snapshots": mechanism_stages,
+                                           "stop_snapshot": max(mechanism_stages)}) + "\n")
+            print("Mechanism diagnostic complete at snapshot {}. Results: {}".format(
+                max(mechanism_stages), log_path), flush=True)
+            fitlog.finish()
+            return None, None, None, None
 
         final_training_history, final_training_output = last_history, last_output
         print("\nFinal full-pipeline TEST\n")
@@ -1238,6 +1282,10 @@ def build_arg_parser():
                         help="also record the same stage diagnostics for original DGAR")
     parser.add_argument("--fahc-final-validation", action="store_true",
                         help="evaluate all validation snapshots with final DGAR inference for configuration selection")
+    parser.add_argument("--fahc-mechanism-stages", default="",
+                        help="diagnostic snapshot indices, e.g. 60,90,120; stop at the last index and skip final test")
+    parser.add_argument("--fahc-mechanism-reference-steps", type=int, default=10,
+                        help="temporary full-current-only updates for risk prediction diagnosis")
 
     # configuration for optimal parameters
     parser.add_argument("--grid-search", action='store_true', default=False,

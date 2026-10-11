@@ -270,6 +270,30 @@ class FAHCFlowTest(unittest.TestCase):
         self.assertEqual(record["current_filtered_entity_mrr"], 0.5)
         self.assertEqual(record["filtered_entity_mrr"], 0.4)
 
+    def test_mechanism_prefix_stops_and_never_evaluates_test(self):
+        args = self._args(mode="random")
+        args.fahc_mechanism_stages = (3,)
+        snapshots = [_snapshot(index) for index in range(5)]
+        splits = ([value[:8, :3] for value in snapshots],
+                  [value[8:9, :3] for value in snapshots],
+                  [value[9:, :3] for value in snapshots])
+        metric = dict(spearman_ab=0.5, spearman_mean_observed=0.4,
+                      observed_topk_lift=0.1)
+        record = dict(event="mechanism", snapshot=3,
+                      metrics={"current_only": metric, "dgar_history_only": metric})
+        with (patch.object(main.utils, "spilt_data", return_value=splits),
+              patch.object(main, "begin_mechanism_diagnostic", return_value={}) as begin,
+              patch.object(main, "finish_mechanism_diagnostic", return_value=record) as end):
+            run = self._run(args)
+        self.assertEqual(begin.call_count, 1)
+        self.assertEqual(end.call_count, 1)
+        self.assertEqual(run.result, (None,) * 4)
+        self.assertEqual(run.final_evaluations, [])
+        completed = [value for value in run.records if value["event"] == "mechanism_complete"]
+        self.assertEqual(completed[0]["snapshots"], [3])
+        stages = [value["snapshot"] for value in run.records if value["event"] == "stage"]
+        self.assertEqual(stages, [1, 2, 3])
+
     def test_t1_warmup_then_t2_full_hcp_selection_precedes_fact_cap(self):
         run = self._run(self._args())
         self.assertEqual(run.probes, [([8], 2, 1.0)])

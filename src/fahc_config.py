@@ -74,6 +74,26 @@ def validate_args(args: object) -> None:
     if selection not in HCP_MODES:
         raise ValueError(f"unknown HCP selection mode: {selection!r}")
 
+    stages = getattr(args, "fahc_mechanism_stages", "")
+    if isinstance(stages, str):
+        try:
+            stages = tuple(int(value.strip()) for value in stages.split(",")) if stages else ()
+        except ValueError as exc:
+            raise ValueError("--fahc-mechanism-stages expects comma-separated snapshot indices") from exc
+    if (not isinstance(stages, (list, tuple)) or
+            any(isinstance(value, bool) or not isinstance(value, Integral)
+                or value < 2 for value in stages) or len(set(stages)) != len(stages)):
+        raise ValueError("--fahc-mechanism-stages requires distinct integer indices >= 2")
+    args.fahc_mechanism_stages = tuple(sorted(stages))
+    args.fahc_mechanism_reference_steps = getattr(args, "fahc_mechanism_reference_steps", 10)
+    _integer(args, "fahc_mechanism_reference_steps", minimum=1)
+    if stages:
+        if (selection != "random" or args.fahc_kd_weight != 0 or args.n_epochs != 1
+                or getattr(args, "test", False) or getattr(args, "grid_search", False)):
+            raise ValueError("mechanism diagnostic requires chronological random replay, KD0, and no --test/grid-search")
+        if min(stages) <= args.reply_batch + 1:
+            raise ValueError("mechanism stages must exceed k+1 to allow historical selection")
+
     for name in ("delete_feature_reply", "delete_his_prompt", "add_history"):
         if hasattr(args, name):
             setattr(args, name, parse_bool(getattr(args, name)))
@@ -168,6 +188,7 @@ _SIGNATURE_EXCLUDE = frozenset({
     "log_dir", "save_dir",
     "output_dir", "model_dir", "checkpoint_dir", "model_state_file",
     "diffu_model_state_file", "num_nodes", "num_rels",
+    "fahc_mechanism_stages", "fahc_mechanism_reference_steps",
 })
 
 _FLOAT_FIELDS = frozenset({

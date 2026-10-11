@@ -17,6 +17,26 @@ _MISSING = object()
 _TRANSIENT_KEYS = ("h", "h_0", "rel_emb")
 
 
+def _batchnorm_state(model):
+    """Copy only BatchNorm running statistics for diagnostic comparisons."""
+    result = {}
+    for prefix, module in model.named_modules():
+        if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+            for name in ("running_mean", "running_var", "num_batches_tracked"):
+                value = getattr(module, name, None)
+                if value is not None:
+                    key = f"{prefix}.{name}" if prefix else name
+                    result[key] = value.detach().cpu().clone()
+    return result
+
+
+@torch.no_grad()
+def _load_batchnorm_state(model, state):
+    buffers = dict(model.named_buffers())
+    for name, value in state.items():
+        buffers[name].copy_(value)
+
+
 def _capture_runtime_state(model):
     """Save module modes and forward caches omitted from ``state_dict``."""
     return [(module, module.training,
@@ -99,7 +119,7 @@ def probe_hcp_risks(model, old_model, candidates: Sequence[HCPCandidate],
                     current_triples, history_glist, static_graph, use_cuda: bool,
                     task_weight: float, learning_rate: float, grad_norm: float,
                     steps: int = 1, score_batch_size: int = 256,
-                    training_optimizer=None):
+                    training_optimizer=None, diagnostics=None):
     """Probe current data, score positive HCP loss changes, then fully restore.
 
     A separate Adam copies the main optimizer's moments and group settings
@@ -112,11 +132,19 @@ def probe_hcp_risks(model, old_model, candidates: Sequence[HCPCandidate],
     if not 0 <= task_weight <= 1 or learning_rate <= 0 or grad_norm <= 0:
         raise ValueError("invalid probe optimization settings")
     if not any(candidate.triples for candidate in candidates):
+        if diagnostics is not None:
+            diagnostics.update({
+                "old_losses": {candidate.time_index: [] for candidate in candidates},
+                "after_losses": {candidate.time_index: [] for candidate in candidates},
+                "signed_increase": {candidate.time_index: 0.0 for candidate in candidates},
+                "fixed_bn_risks": {candidate.time_index: 0.0 for candidate in candidates},
+            })
         return {candidate.time_index: 0.0 for candidate in candidates}
 
     # Keep the temporary checkpoint on CPU instead of doubling GPU weights.
     state = {name: value.detach().cpu().clone()
              for name, value in model.state_dict().items()}
+    old_bn = _batchnorm_state(model) if diagnostics is not None else None
     cpu_rng = torch.get_rng_state()
     python_rng = random.getstate()
     numpy_rng = np.random.get_state()
@@ -145,6 +173,25 @@ def probe_hcp_risks(model, old_model, candidates: Sequence[HCPCandidate],
         risks = {candidate.time_index: positive_loss_increase(
             old_losses[candidate.time_index], probe_losses[candidate.time_index])
             for candidate in candidates}
+        if diagnostics is not None:
+            diagnostics.update({
+                "old_losses": old_losses,
+                "after_losses": probe_losses,
+                "signed_increase": {
+                    index: (sum(new - old for old, new in zip(values, probe_losses[index]))
+                            / len(values) if values else 0.0)
+                    for index, values in old_losses.items()},
+            })
+            # Keep the probe weights, replacing only its BN statistics.
+            _load_batchnorm_state(model, old_bn)
+            fixed_bn_losses = _candidate_losses(
+                model, candidates, history_glist, static_graph, use_cuda,
+                score_batch_size)
+            diagnostics["fixed_bn_risks"] = {
+                candidate.time_index: positive_loss_increase(
+                    old_losses[candidate.time_index],
+                    fixed_bn_losses[candidate.time_index])
+                for candidate in candidates}
     finally:
         model.load_state_dict(state)
         for parameter, gradient in gradients:

@@ -65,6 +65,8 @@ def main():
                     snapshot_count += 1
                     previous = time
     available = {path.name for path in cache}
+    if args.fahc_mechanism_stages and max(args.fahc_mechanism_stages) >= snapshot_count:
+        raise ValueError("mechanism snapshot indices must be smaller than the dataset snapshot count")
     missing = {f"snap_{index}.pkl" for index in range(snapshot_count)} - available
     if missing:
         raise ValueError(f"incomplete historical cache: {len(missing)} snapshots missing")

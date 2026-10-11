@@ -29,6 +29,8 @@ def read_run(directory, include_test=False):
                     ("failed" if status else "running_or_interrupted"),
            "wall_min": round(status["wall_seconds"] / 60, 2)
                        if "wall_seconds" in status else None}
+    if settings.get("fahc_mechanism_stages") and row["state"] == "finished":
+        row["state"] = "diagnostic_finished"
     final_validations = [record for record in records
                         if record.get("event") == "final_validation"]
     if final_validations:

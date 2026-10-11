@@ -216,6 +216,26 @@ class FAHCConfigTests(unittest.TestCase):
         validate_args(off)
         self.assertIs(off.diffuc, False)
 
+    def test_mechanism_requires_random_trajectory_and_real_selection_choice(self):
+        args = sample_args(hcp_selection="random", fahc_kd_weight=0,
+                           fahc_mechanism_stages="120,60,90")
+        before = experiment_signature(args)
+        validate_args(args)
+        self.assertEqual(args.fahc_mechanism_stages, (60, 90, 120))
+        self.assertEqual(experiment_signature(args), before)
+        for stages in ("60,60", "bad", "35", "60,", [True]):
+            with self.subTest(stages=stages), self.assertRaises(ValueError):
+                validate_args(sample_args(hcp_selection="random", fahc_kd_weight=0,
+                                          fahc_mechanism_stages=stages))
+        for overrides in (dict(hcp_selection="risk"), dict(test=True),
+                          dict(grid_search=True), dict(fahc_kd_weight=0.03),
+                          dict(fahc_mechanism_reference_steps=0)):
+            values = dict(hcp_selection="random", fahc_kd_weight=0,
+                          fahc_mechanism_stages="60,90,120")
+            values.update(overrides)
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                validate_args(sample_args(**values))
+
 
 if __name__ == "__main__":
     unittest.main()
