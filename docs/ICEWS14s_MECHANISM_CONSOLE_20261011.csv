@@ -1,0 +1,7 @@
+snapshot,target,spearman_ab,spearman_mean_observed,observed_topk_lift,stability_ge_0_5,prediction_ge_0_3,lift_positive,passes_printed_numeric_conditions,full_gate_verified,console_completion_markers_seen,source_log,source_log_sha256
+60,current_only,0.24079485680888368,0.432437171244886,0.04873549187801368,False,True,True,False,False,True,logs/ICEWS14s-mechanism-seed1.log,4c608216a4e509595fbaee07afb4e7701f81d7588a14c1e072fd7e9a10495f8c
+60,dgar_history_only,0.24079485680888368,0.18562244301578024,0.0007412657844657056,False,False,True,False,False,True,logs/ICEWS14s-mechanism-seed1.log,4c608216a4e509595fbaee07afb4e7701f81d7588a14c1e072fd7e9a10495f8c
+90,current_only,0.7244335578689528,0.673939287901321,0.0542576388640727,True,True,True,True,False,True,logs/ICEWS14s-mechanism-seed1.log,4c608216a4e509595fbaee07afb4e7701f81d7588a14c1e072fd7e9a10495f8c
+90,dgar_history_only,0.7244335578689528,0.21907094742367247,0.008551967527404836,True,False,True,False,False,True,logs/ICEWS14s-mechanism-seed1.log,4c608216a4e509595fbaee07afb4e7701f81d7588a14c1e072fd7e9a10495f8c
+120,current_only,0.9452016446505118,0.7590761963082845,0.05631679773279702,True,True,True,True,False,True,logs/ICEWS14s-mechanism-seed1.log,4c608216a4e509595fbaee07afb4e7701f81d7588a14c1e072fd7e9a10495f8c
+120,dgar_history_only,0.9452016446505118,0.5701163502755664,0.027384453751431115,True,True,True,True,False,True,logs/ICEWS14s-mechanism-seed1.log,4c608216a4e509595fbaee07afb4e7701f81d7588a14c1e072fd7e9a10495f8c
