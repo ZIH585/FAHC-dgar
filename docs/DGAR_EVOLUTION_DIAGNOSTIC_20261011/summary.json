@@ -1,0 +1,227 @@
+{
+  "tool": "analyze_dgar_evolution.py",
+  "model_or_gpu_executed": false,
+  "units": "Jensen-Shannon divergence in bits; proportions in 0..1",
+  "settings": {
+    "data_dir": "/data1/zihao/DGAR-code/data/ICEWS14s",
+    "output_dir": "docs/DGAR_EVOLUTION_DIAGNOSTIC_20261011",
+    "split": "current-dgar",
+    "windows": 5,
+    "prefix_snapshots": 0,
+    "seed": 1,
+    "permutations": 200,
+    "min_count": 80,
+    "max_sample": 200,
+    "query_min": 3,
+    "query_cap": 20,
+    "min_common_queries": 5,
+    "inverse": true
+  },
+  "split_definition": "concatenate raw train/valid/test time snapshots in that order; each snapshot's first floor(0.8*N) facts are training, remaining suffix excluded",
+  "source_inputs": [
+    {
+      "path": "/data1/zihao/DGAR-code/data/ICEWS14s/train.txt",
+      "sha256": "228da10c44ae0a5babc439c76e063ee8094352da7270b299b0b0a6778cddd0f4",
+      "source_role": "train",
+      "source_snapshots": 304,
+      "source_facts": 74845
+    },
+    {
+      "path": "/data1/zihao/DGAR-code/data/ICEWS14s/valid.txt",
+      "sha256": "b046fe729601246f0b52fceff371e7cb668b63669aee812ddf392cad4fcd8196",
+      "source_role": "valid",
+      "source_snapshots": 30,
+      "source_facts": 8514
+    },
+    {
+      "path": "/data1/zihao/DGAR-code/data/ICEWS14s/test.txt",
+      "sha256": "1ce0a75fbdc1d1e041efe290f44948722327c65a9ea09a728060b2c34d3474bd",
+      "source_role": "test",
+      "source_snapshots": 31,
+      "source_facts": 7371
+    },
+    {
+      "path": "/data1/zihao/DGAR-code/data/ICEWS14s/stat.txt",
+      "sha256": "590d6632d8efd57bdd13dcab133dc0fcd848103f651766fe47ba4316a1db2547",
+      "source_role": "identifier_counts"
+    }
+  ],
+  "source_snapshot_count": 365,
+  "used_training_snapshot_count": 365,
+  "training_fact_count": 72437,
+  "prefix_causality": "each estimate uses only training windows up to its new_window endpoint; use for later updates only, not retrospectively within that window",
+  "window_definition": "chronological index * windows // retained_snapshot_count",
+  "inverse_definition": "source forward r and constructed inverse r+num_relations analyzed separately; entity/relation global frequencies use source facts once",
+  "null_definition": "tail: pooled equal-count sample labels shuffled; conditional: labels shuffled within each repeated subject query with equal samples per side",
+  "interpretation_limits": [
+    "Exploratory data statistics, not neural representation drift or causal forgetting evidence.",
+    "Tail changes include subject composition changes; inspect conditional support and null comparison.",
+    "No multiple-comparison correction; permutation p values are descriptive screening signals.",
+    "Current-DGAR raw valid/test filenames contain facts reassigned to training by existing code; only reassigned training prefixes are used, never the actual held-out suffixes.",
+    "Frequency JS over 230 relations and 7128 entities is not a fair dimension-controlled comparison.",
+    "Cache hash records bytes only; this standard-library tool does not unpickle or validate cache semantics."
+  ],
+  "cache_manifest": {
+    "files": 365,
+    "sha256_name_and_file_hash_manifest": "9b3e3aff24cd49af979d07b61a226a35c86589dc27885d47d5f111f5708bdff8"
+  },
+  "windows": [
+    {
+      "window": 1,
+      "snapshot_count": 73,
+      "first_timestamp": 1,
+      "last_timestamp": 73,
+      "training_fact_count": 13929,
+      "unique_relations": 180,
+      "unique_entities": 3113,
+      "estimate_available_after_timestamp": 73
+    },
+    {
+      "window": 2,
+      "snapshot_count": 73,
+      "first_timestamp": 74,
+      "last_timestamp": 146,
+      "training_fact_count": 14076,
+      "unique_relations": 172,
+      "unique_entities": 3150,
+      "estimate_available_after_timestamp": 146
+    },
+    {
+      "window": 3,
+      "snapshot_count": 73,
+      "first_timestamp": 147,
+      "last_timestamp": 219,
+      "training_fact_count": 14303,
+      "unique_relations": 177,
+      "unique_entities": 3085,
+      "estimate_available_after_timestamp": 219
+    },
+    {
+      "window": 4,
+      "snapshot_count": 73,
+      "first_timestamp": 220,
+      "last_timestamp": 292,
+      "training_fact_count": 14718,
+      "unique_relations": 171,
+      "unique_entities": 3134,
+      "estimate_available_after_timestamp": 292
+    },
+    {
+      "window": 5,
+      "snapshot_count": 73,
+      "first_timestamp": 293,
+      "last_timestamp": 365,
+      "training_fact_count": 15411,
+      "unique_relations": 180,
+      "unique_entities": 3221,
+      "estimate_available_after_timestamp": 365
+    }
+  ],
+  "transitions": [
+    {
+      "old_window": 1,
+      "new_window": 2,
+      "relation_frequency_js_bits": 0.01188964912714698,
+      "entity_frequency_js_bits": 0.1572382326682668,
+      "reliable_forward_tail_relations": 27,
+      "forward_tail_js_excess": {
+        "count": 27,
+        "min": 0.005554093255795811,
+        "median": 0.06151822437882559,
+        "p90": 0.10587148445076527,
+        "max": 0.12018727169477073
+      },
+      "forward_tail_p_at_most_005_count": 20,
+      "reliable_forward_conditional_relations": 13,
+      "forward_conditional_js_excess": {
+        "count": 13,
+        "min": 0.0034418223318615215,
+        "median": 0.06521646323426011,
+        "p90": 0.12457518531793177,
+        "max": 0.24531176889112022
+      },
+      "forward_conditional_p_at_most_005_count": 12,
+      "reliable_directed_tail_relations": 54,
+      "reliable_directed_conditional_relations": 27
+    },
+    {
+      "old_window": 2,
+      "new_window": 3,
+      "relation_frequency_js_bits": 0.01028448695284416,
+      "entity_frequency_js_bits": 0.15515246418874268,
+      "reliable_forward_tail_relations": 26,
+      "forward_tail_js_excess": {
+        "count": 26,
+        "min": -0.0035617995153987003,
+        "median": 0.07689096542308035,
+        "p90": 0.12734362290887558,
+        "max": 0.29364877370593195
+      },
+      "forward_tail_p_at_most_005_count": 23,
+      "reliable_forward_conditional_relations": 14,
+      "forward_conditional_js_excess": {
+        "count": 14,
+        "min": 0.007934522384727305,
+        "median": 0.06821565358368603,
+        "p90": 0.18659761765342142,
+        "max": 0.3012463069820744
+      },
+      "forward_conditional_p_at_most_005_count": 11,
+      "reliable_directed_tail_relations": 52,
+      "reliable_directed_conditional_relations": 28
+    },
+    {
+      "old_window": 3,
+      "new_window": 4,
+      "relation_frequency_js_bits": 0.01080421890098996,
+      "entity_frequency_js_bits": 0.14587271607264435,
+      "reliable_forward_tail_relations": 27,
+      "forward_tail_js_excess": {
+        "count": 27,
+        "min": -0.009327450661746173,
+        "median": 0.051974006040882315,
+        "p90": 0.11320141900939085,
+        "max": 0.3243416572222533
+      },
+      "forward_tail_p_at_most_005_count": 20,
+      "reliable_forward_conditional_relations": 15,
+      "forward_conditional_js_excess": {
+        "count": 15,
+        "min": -0.010991691798102332,
+        "median": 0.07460725781515654,
+        "p90": 0.1328501098022543,
+        "max": 0.15912324844274717
+      },
+      "forward_conditional_p_at_most_005_count": 12,
+      "reliable_directed_tail_relations": 54,
+      "reliable_directed_conditional_relations": 30
+    },
+    {
+      "old_window": 4,
+      "new_window": 5,
+      "relation_frequency_js_bits": 0.007875532606014262,
+      "entity_frequency_js_bits": 0.13927487706667235,
+      "reliable_forward_tail_relations": 28,
+      "forward_tail_js_excess": {
+        "count": 28,
+        "min": -0.010613872296157456,
+        "median": 0.06534514116625184,
+        "p90": 0.11827348308110197,
+        "max": 0.18566850497038767
+      },
+      "forward_tail_p_at_most_005_count": 21,
+      "reliable_forward_conditional_relations": 16,
+      "forward_conditional_js_excess": {
+        "count": 16,
+        "min": 0.0074013503056719054,
+        "median": 0.06153739408517067,
+        "p90": 0.12196954917203673,
+        "max": 0.2480187273421694
+      },
+      "forward_conditional_p_at_most_005_count": 12,
+      "reliable_directed_tail_relations": 56,
+      "reliable_directed_conditional_relations": 32
+    }
+  ],
+  "elapsed_seconds": 16.445696570910513
+}

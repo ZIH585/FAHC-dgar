@@ -1,0 +1,86 @@
+{
+  "date": "2026-10-11",
+  "procedure": "CPU-only offline reconstruction; no training or model evaluation",
+  "source_run_id": "20261006_170930_107420_1034aefb09",
+  "source_config_subset": {
+    "dataset": "ICEWS14s",
+    "seed": 1,
+    "hcp_selection": "risk+coverage",
+    "reply_batch": 35,
+    "fahc_fact_budget": 128,
+    "fahc_eta": 1.0,
+    "fahc_entity_weight": 1.0,
+    "fahc_candidate_multiplier": 2.0,
+    "fahc_kd_weight": 0.0
+  },
+  "input_sha256": {
+    "data/ICEWS14s/train.txt": "228da10c44ae0a5babc439c76e063ee8094352da7270b299b0b0a6778cddd0f4",
+    "data/ICEWS14s/valid.txt": "b046fe729601246f0b52fceff371e7cb668b63669aee812ddf392cad4fcd8196",
+    "data/ICEWS14s/test.txt": "1ce0a75fbdc1d1e041efe290f44948722327c65a9ea09a728060b2c34d3474bd",
+    "logs/fahc_ICEWS14s_risk+coverage_1_20261006_170930_107420_1034aefb09.jsonl": "0dd5dd0963fc258027438d9f8bfcc3cfd2ef8e6c83db1b7e8d9cf2c2483594a8"
+  },
+  "history_cache_combined_sha256": "d017ebe7358e787c680e5bd6a6ec955c0d1ccbf55dfe7b0a5499355633f619c4",
+  "history_cache_digest_encoding": "for indices 0..364 in order, concatenate UTF-8 filename, NUL, raw file bytes into SHA256",
+  "cache_check": {
+    "snapshot_count": 365,
+    "original_time_ids_strictly_increasing": true,
+    "sum_unique_forward_fact_count": 72437,
+    "inverse_fact_count": 0,
+    "subject_key_mismatch_count": 0,
+    "cache_union_equals_reconstructed_80percent_train_snapshots": 365
+  },
+  "audit_count": {
+    "stages": 328,
+    "first_stage": 37,
+    "last_stage": 364,
+    "candidate_fact_count_matches": 22365,
+    "candidate_fact_count_mismatches": 0
+  },
+  "proxy_definitions": {
+    "same_subject_relation_fraction": "Fraction of candidate historical facts whose (subject, relation) pair also occurs in the current 80percent training snapshot; no current target labels or model predictions used",
+    "current_relation_fraction": "Fraction of candidate historical facts whose relation occurs in the current 80percent training snapshot",
+    "age": "current snapshot index minus candidate snapshot index",
+    "highrisk35": "Offline pure-risk top35 of the same logged candidate pool; not a trained risk experiment",
+    "old_combo": "Actual selected indices from the old B128 eta1 risk+coverage run",
+    "aggregate_means": "Unweighted mean over audited stages of each stage mean; not weighted by facts"
+  },
+  "aggregate": {
+    "age": {
+      "median_stage_spearman_risk": 0.09329017583763449,
+      "valid_correlation_stages": 328,
+      "mean_stage_pool_mean": 100.54616724738676,
+      "mean_stage_highrisk35_mean": 105.84834494773519,
+      "mean_stage_old_combo_mean": 95.20966898954704
+    },
+    "fact_count": {
+      "median_stage_spearman_risk": 0.00447512146582995,
+      "valid_correlation_stages": 328,
+      "mean_stage_pool_mean": 62.068152596397226,
+      "mean_stage_highrisk35_mean": 61.90775261324042,
+      "mean_stage_old_combo_mean": 72.81428571428572
+    },
+    "same_subject_relation_fraction": {
+      "median_stage_spearman_risk": -0.01562849889707194,
+      "valid_correlation_stages": 328,
+      "mean_stage_pool_mean": 0.24751338611530257,
+      "mean_stage_highrisk35_mean": 0.2471057241162491,
+      "mean_stage_old_combo_mean": 0.24269025012724504
+    },
+    "current_relation_fraction": {
+      "median_stage_spearman_risk": 0.0007436542134006743,
+      "valid_correlation_stages": 328,
+      "mean_stage_pool_mean": 0.8792394585359953,
+      "mean_stage_highrisk35_mean": 0.8794032088852367,
+      "mean_stage_old_combo_mean": 0.8690399346194643
+    },
+    "risk_share_of_greedy_gain_median": 0.13945160212789787
+  },
+  "limitations": [
+    "This is the old B128, eta1, KD0 run; statistics do not establish the modern v3 selector behavior.",
+    "Subject/relation matching is only a structural relevance proxy, not causal utility, importance, truth persistence, or evidence that an old event should be discarded.",
+    "Each stage is conditioned on the logged sampled candidate pool, not every eligible historical time slice.",
+    "No cached model weights, logits, gradients, or per-fact candidate losses are used; no temporal evolution or importance estimate is proved.",
+    "Local source get_history writes inverses but the existing local cache has zero inverse facts. Both original and FAHC load the same cache and both retain current subjects. Experiment server cache consistency for v3 cannot be independently confirmed."
+  ],
+  "output_stage_csv": "docs/FAHC_HCP_RELEVANCE_STAGE_AUDIT_20261011.csv"
+}
