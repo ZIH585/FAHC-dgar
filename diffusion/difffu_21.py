@@ -576,7 +576,8 @@ class DiffuRec(nn.Module):
                 model_output=model_output.requires_grad_(True)
                 model_output_t_=model_output_t_.requires_grad_(True)
                 # e_embeding, static_emb, r_embed, _,_ = model(history_glist,  static_graph, use_cuda,model_output,tag,diffu_rep=args.diffuc)
-                e_embeding, static_emb, r_embed, _,_ = model(history_glist,  static_graph, use_cuda,model_output,model_output_t_,tag,diffu_rep=args.diffuc)
+                # ECRI acts on prediction fusion; keep Original diffusion guidance.
+                e_embeding, static_emb, r_embed, _,_ = model(history_glist,  static_graph, use_cuda,model_output,model_output_t_,tag,diffu_rep=args.diffuc, apply_ecri=False)
 
                 # embedding = F.normalize(model.h) if model.layer_norm else model.h
                 # score = model.decoder_ob.forward(embedding, model.h_0, tag, mode="test")

@@ -15,8 +15,9 @@ import itertools
 import argparse
 from pathlib import Path
 from src.cli import build_arg_parser, validate_args
+from src.ecri import EvolutionConfig, EvolutionHistory, record_stage
 from src.runtime import (isolated_rng, deterministic_evaluation, prepare_run,
-                         save_training_state, restore_training_state)
+                         save_training_state, restore_training_state, validate_history_cache)
 from rgcn import utils
 from rgcn.utils import *
 from src.rrgcn import RecurrentRGCN
@@ -85,6 +86,7 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
     device = next(model.parameters()).device
     # do not have inverse relation in test input
     his_list = [snap for snap in history_list]
+    evolution = EvolutionHistory(num_nodes, num_rels, EvolutionConfig.from_args(args)) if args.ecri else None
 
     last_history = last_history
     last_output = last_output
@@ -94,7 +96,11 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
 
     for time_idx, test_snap in enumerate(tqdm(test_list)):
         if time_idx==0:
+            if evolution is not None:
+                evolution.observe(0, his_list[0])
             continue
+        if evolution is not None:
+            model.set_ecri_context(evolution.features(time_idx), time_idx)
         input_list = his_list[max(0, time_idx - args.test_history_len):time_idx]
         history_glist = [build_sub_graph(
             num_nodes, num_rels, g, use_cuda, args.gpu) for g in input_list]
@@ -170,6 +176,8 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
         mrr_raw_list_r.append(mrr_snap_r)
         mrr_filter_list_r.append(mrr_filter_snap_r)
 
+        if evolution is not None:
+            evolution.observe(time_idx, his_list[time_idx])
         idx += 1
         last_output = [snap for snap in test_triples_input]
         last_history = [snap for snap in history_glist]
@@ -262,9 +270,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     data_list.extend(test_list)
     train_list,valid_list,test_list = utils.spilt_data(data_list)
     data_history = args.data_root / args.dataset / "history_snap_v2"
-    missing = [i for i in range(len(train_list)) if not (data_history / f"snap_{i}.pkl").is_file()]
-    if missing:
-        raise FileNotFoundError("Copy the matching Original history_snap_v2 cache before running; missing snapshots: " + str(missing[:5]))
+    validate_history_cache(train_list, data.num_rels, data_history)
     prepare_run(args)
     fitlog.set_log_dir(str(args.run_dir / "fitlog" if args.run_dir else Path(__file__).resolve().parents[1] / "logs"))
     fitlog.add_hyper({key: str(value) if isinstance(value, Path) else value
@@ -469,11 +475,16 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     # scheduler = lr_scheduler.CosineAnnealingWarmRestarts(
     #     optimizer_diffu, T_0=50 * per_epochs, T_mult=2, eta_min=args.lr/100)
 
+    evolution = EvolutionHistory(num_nodes, num_rels, EvolutionConfig.from_args(args)) if args.ecri else None
     first_stage = 1
     resumed_auxiliary = None
     if args.resume:
         first_stage, resumed_auxiliary = restore_training_state(
             args, model, diffu, model_repre, model_diffpre, optimizer, optimizer_diffu, run_device)
+        if evolution is not None:
+            evolution.load_state_dict(resumed_auxiliary)
+            if evolution.next_stage != first_stage:
+                raise ValueError("ECRI state cursor does not match resumed training stage")
 
     if args.test:
         if not os.path.exists(model_state_file):
@@ -495,7 +506,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
         final_train = torch.from_numpy(train_list[final_idx]).long().to(device)
         last_output = [snap for snap in final_train]
 
-        result = test(args, model, train_list + valid_list, test_list,
+        result = test(args, model, train_list, test_list,
                       num_rels, num_nodes, use_cuda, all_ans_list_test,
                       all_ans_list_r_test, model_state_file, static_graph,
                       "test", last_history, last_output, static_graph_diffu,
@@ -535,6 +546,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 last_history = [build_sub_graph(num_nodes, num_rels, snap, use_cuda, args.gpu)
                     for snap in train_list[max(0, previous - args.train_history_len):previous]]
                 last_output = list(torch.as_tensor(train_list[previous], dtype=torch.long, device=run_device))
+            if evolution is not None and not args.resume:
+                evolution.observe(0, train_list[0])
             idx = list(range(first_stage, len(train_list)))
             
             for batch_idx, train_sample_num in enumerate(tqdm(idx)):
@@ -549,6 +562,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 # history storage
 
                 output_re = train_list[train_sample_num]
+                if evolution is not None:
+                    model.set_ecri_context(evolution.features(train_sample_num), train_sample_num)
 
                 # generate history graph
                 history_glist = [build_sub_graph(
@@ -730,13 +745,17 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     diffu.load_state_dict(checkpoint_diffu)
                     model_diffpre.load_state_dict(checkpoint_diffu)
                     optimizer_diffu.load_state_dict(early_stopping_dif.optimizer_state)
+                if evolution is not None:
+                    record_stage(args.run_dir / "ecri.jsonl", evolution, model.ecri_gate)
+                    evolution.observe(train_sample_num, train_list[train_sample_num])
                 save_training_state(args, train_sample_num, model, diffu,
-                                    optimizer, optimizer_diffu, run_device, auxiliary=None)
+                                    optimizer, optimizer_diffu, run_device,
+                                    auxiliary=evolution.state_dict() if evolution is not None else None)
 
         print("Final full-pipeline TEST")
         mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r, last_history, last_output,mrrs,h1s,h3s,h10s,m_,h1,h3,h10 = test(args,
                                                                                        model,
-                                                                                       train_list+valid_list,
+                                                                                       train_list,
                                                                                        test_list,
                                                                                        num_rels,
                                                                                        num_nodes,

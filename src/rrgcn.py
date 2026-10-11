@@ -9,6 +9,7 @@ import numpy as np
 from rgcn.layers import UnionRGCNLayer, RGCNBlockLayer
 from src.model import BaseRGCN
 from src.decoder import ConvTransE, ConvTransR
+from src.ecri import EvolutionGate
 from diffusion.difffu_21 import MultiHeadedAttention
 from rgcn.reservoir_sampler import *
 from rgcn.CorruptTriplesGlobal import *
@@ -173,7 +174,11 @@ class RecurrentRGCN(nn.Module):
 
         self.attention = MultiHeadedAttention(
             heads=attn_heads, hidden_size=self.h_dim, dropout=dropout)
-        self.alpha = torch.nn.Parameter(torch.tensor(0.5)) 
+        self.alpha = torch.nn.Parameter(torch.tensor(0.5))
+        self.ecri_gate = (EvolutionGate(args.ecri_bias_init, args.ecri_role_init, args.ecri_churn_init)
+                          if getattr(args, "ecri", False) else None)
+        self.register_buffer("_ecri_features", None, persistent=False)
+        self._ecri_stage = None
 
         # GRU cell for relation evolving
         self.relation_cell_1 = nn.GRUCell(self.h_dim*2, self.h_dim)
@@ -207,7 +212,18 @@ class RecurrentRGCN(nn.Module):
 
         return entity_all, ent_embeding
 
-    def forward(self, g_list, static_graph, use_cuda, model_output=None,model_output_x_t=None, tag=None, diffu_rep="add", output_reply_triple=None, current_query_history_graph=None):
+    def set_ecri_context(self, features, stage):
+        if self.ecri_gate is None:
+            raise ValueError("ECRI is disabled")
+        if stage < 0 or tuple(features.shape) != (self.num_ents, 3):
+            raise ValueError("ECRI context needs a nonnegative stage and [num_entities,3] features")
+        features = torch.as_tensor(features)
+        if not torch.isfinite(features).all() or (features < 0).any() or (features > 1).any():
+            raise ValueError("ECRI features must be finite values in [0,1]")
+        self._ecri_features = features.detach().to(self.dynamic_emb).clone()
+        self._ecri_stage = int(stage)
+
+    def forward(self, g_list, static_graph, use_cuda, model_output=None,model_output_x_t=None, tag=None, diffu_rep="add", output_reply_triple=None, current_query_history_graph=None, apply_ecri=True):
         if model_output is not None and len(model_output) == 0:
             model_output = None
         gate_list = []
@@ -262,8 +278,14 @@ class RecurrentRGCN(nn.Module):
 
             if model_output is not None:
                 if diffu_rep == "add":
-                    current_h[entity_all[:], :] = self.alpha*current_h[entity_all[:],
-                                                            :]+(1-self.alpha)*ent_embeding[entity_all[:], :]
+                    if self.ecri_gate is not None and apply_ecri:
+                        if self._ecri_features is None:
+                            raise RuntimeError("Set the strictly past ECRI context before prediction/training")
+                        alpha = self.ecri_gate(self.alpha, self._ecri_features[entity_all])
+                        current_h[entity_all, :] = alpha*current_h[entity_all, :] + (1-alpha)*ent_embeding[entity_all, :]
+                    else:
+                        current_h[entity_all[:], :] = self.alpha*current_h[entity_all[:],
+                                                                :]+(1-self.alpha)*ent_embeding[entity_all[:], :]
                 if diffu_rep == "Linear":
                     current_h[entity_all[:], :] = current_h[entity_all[:],:]+ent_embeding[entity_all[:], :]
 

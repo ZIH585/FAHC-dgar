@@ -133,7 +133,7 @@ def build_arg_parser():
     parser.add_argument("--num-k", type=int, default=500,
                         help="number of triples generated")
 
-    
+
     # diffusion
     parser.add_argument("--diffu", default=True, type=parse_bool,
                         help="do or don't reply")
@@ -170,14 +170,14 @@ def build_arg_parser():
 
     parser.add_argument('--history_sample', type=int, default=64,
                         help='rescal timesteps')
-    
+
     parser.add_argument('--delete_score', type=parse_bool, default=False)
     parser.add_argument('--delete_his_prompt', type=parse_bool, default=False)
     parser.add_argument('--delete_temporal_attention', type=parse_bool, default=False)
     parser.add_argument('--delete_feature_reply', type=parse_bool, default=False)
     parser.add_argument('--mu', type=float, default=1.0)
     parser.add_argument('--mu_r', type=float, default=1.0)
-    
+
     # parser.add_argument("--reply_batch_num", type=int, default=128)
     parser.add_argument("--heads", type=int, default=4,
                         help="perform layer normalization")
@@ -206,6 +206,17 @@ def build_arg_parser():
     parser.add_argument("--run-dir", type=Path, default=None, help="Separate config, checkpoints and outputs for this run")
     parser.add_argument("--resume", type=Path, default=None, help="Resume a completed chronological stage from latest.pt")
     parser.add_argument("--final-validation", action="store_true", help="Also report final full-pipeline validation")
+    group = parser.add_argument_group("ECRI: causal evolution-conditioned representation fusion")
+    group.add_argument("--ecri", action="store_true", help="Enable ECRI; requires --run-dir")
+    group.add_argument("--ecri-window", type=int, default=30)
+    group.add_argument("--ecri-min-support", type=int, default=10)
+    group.add_argument("--ecri-sample-cap", type=int, default=128,
+                       help="Per entity, per window statistic sample cap; not a replay budget")
+    group.add_argument("--ecri-permutations", type=int, default=20)
+    group.add_argument("--ecri-kappa", type=float, default=20.0)
+    group.add_argument("--ecri-bias-init", type=float, default=0.0)
+    group.add_argument("--ecri-role-init", type=float, default=1.0)
+    group.add_argument("--ecri-churn-init", type=float, default=1.0)
     return parser
 
 
@@ -227,6 +238,16 @@ def validate_args(args):
         raise ValueError("start_reply must be 0: every chronological stage needs a diffusion checkpoint")
     if args.resume and (args.test or args.n_epochs != 1 or args.run_dir is None):
         raise ValueError("resume requires --run-dir, one chronological pass, and no --test")
+    if args.ecri:
+        from src.ecri import EvolutionConfig
+        EvolutionConfig.from_args(args)
+        if args.run_dir is None or args.n_epochs != 1 or args.grid_search:
+            raise ValueError("ECRI requires --run-dir and one chronological pass (no grid search)")
+        if args.diffuc != "add" or args.delete_feature_reply:
+            raise ValueError("ECRI requires Original additive diffusion replay fusion")
+        values = (args.ecri_bias_init, args.ecri_role_init, args.ecri_churn_init)
+        if not all(math.isfinite(x) for x in values) or min(values[1:]) <= 0:
+            raise ValueError("ECRI gate requires finite bias and positive finite slopes")
     if args.run_dir is not None:
         args.run_dir = args.run_dir.resolve()
     args.data_root = args.data_root.resolve()

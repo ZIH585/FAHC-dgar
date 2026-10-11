@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import pickle
 import random
 from contextlib import contextmanager
 from functools import wraps
@@ -78,6 +79,34 @@ def fingerprint(paths, root):
                 digest.update(block)
         digest.update(b'\0')
     return digest.hexdigest()
+
+
+def validate_history_cache(train_list, num_relations, directory):
+    """Reject caches containing facts outside their own training snapshot.
+
+    Preserve forward-only and forward+inverse Original cache conventions as
+    supplied; do not add, drop, or sample facts. Forward coverage must be exact.
+    """
+    for stage, triples in enumerate(train_list):
+        path = directory / f'snap_{stage}.pkl'
+        if not path.is_file():
+            raise FileNotFoundError(f'Copy the matching Original history_snap_v2 cache: {path}')
+        with path.open('rb') as stream:
+            history = pickle.load(stream)
+        if not isinstance(history, dict):
+            raise ValueError(f'Expected a subject-indexed history dictionary: {path}')
+        forward = set(map(tuple, triples.tolist()))
+        allowed = forward | {(o, r + num_relations, s) for s, r, o in forward}
+        observed = set()
+        for subject, rows in history.items():
+            for triple in rows:
+                row = tuple(triple)
+                if len(row) != 3 or str(row[0]) != subject or row not in allowed:
+                    raise ValueError(f'History cache has a misindexed/non-training fact at stage {stage}: {path}')
+                if row[1] < num_relations:
+                    observed.add(row)
+        if observed != forward:
+            raise ValueError(f'History cache is missing training facts at stage {stage}: {path}')
 
 
 def prepare_run(args):
