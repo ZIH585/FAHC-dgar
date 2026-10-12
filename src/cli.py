@@ -2,6 +2,7 @@
 import argparse
 import math
 from pathlib import Path
+from src.qcdr import effective_candidate_alpha
 
 
 def parse_bool(value):
@@ -206,10 +207,18 @@ def build_arg_parser():
     parser.add_argument("--run-dir", type=Path, default=None, help="Separate config, checkpoints and outputs for this run")
     parser.add_argument("--resume", type=Path, default=None, help="Resume a completed chronological stage from latest.pt")
     parser.add_argument("--final-validation", action="store_true", help="Also report final full-pipeline validation")
+    parser.add_argument("--qcdr-mode", default="original",
+                        choices=("original", "candidate-stopgrad", "candidate-scaled"),
+                        help="Route only historical entity replay's candidate gradient")
+    parser.add_argument("--qcdr-candidate-alpha", type=float, default=1.0,
+                        help="Candidate gradient multiplier in candidate-scaled mode, in [0,1]; stopgrad uses 0")
+    parser.add_argument("--qcdr-target", choices=("entity",), default="entity",
+                        help="Only entity candidates are supported; relation prediction stays Original")
     return parser
 
 
 def validate_args(args):
+    effective_candidate_alpha(args.qcdr_mode, args.qcdr_candidate_alpha, args.qcdr_target)
     for name in ("n_epochs", "regcn_epochs", "diffu_epochs", "train_history_len", "test_history_len", "n_hidden", "hidden_size", "attn_heads", "diffusion_steps"):
         if getattr(args, name) < 1:
             raise ValueError(f"{name} must be positive")

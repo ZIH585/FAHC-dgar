@@ -15,6 +15,7 @@ import itertools
 import argparse
 from pathlib import Path
 from src.cli import build_arg_parser, validate_args
+from src.qcdr import effective_candidate_alpha
 from src.runtime import (isolated_rng, deterministic_evaluation, prepare_run,
                          save_training_state, restore_training_state, validate_history_cache)
 from rgcn import utils
@@ -240,6 +241,9 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     if n_bases is not None:
         args.n_bases = n_bases
     validate_args(args)
+    print(f"QCDR mode: {args.qcdr_mode}")
+    print(f"QCDR candidate alpha: {effective_candidate_alpha(args.qcdr_mode, args.qcdr_candidate_alpha, args.qcdr_target)}")
+    print(f"QCDR target: {args.qcdr_target}")
     random.seed(args.seed)
     np.random.seed(args.seed % (2**32))
     torch.default_generator.manual_seed(args.seed)

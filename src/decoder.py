@@ -3,6 +3,7 @@ import random
 from torch.nn import functional as F
 import torch
 from torch.nn.parameter import Parameter
+from src.qcdr import decouple_candidate_gradient
 import math
 import os
 path_dir = os.getcwd()
@@ -76,7 +77,8 @@ class ConvTransE(torch.nn.Module):
         # self.bn4 = torch.nn.BatchNorm1d(Config.embedding_dim)
         self.bn_init = torch.nn.BatchNorm1d(embedding_dim)
 
-    def forward(self, embedding, emb_rel, triplets, nodes_id=None, mode="train", negative_rate=0, partial_embeding=None):
+    def forward(self, embedding, emb_rel, triplets, nodes_id=None, mode="train", negative_rate=0, partial_embeding=None,
+                candidate_grad_scale=1.0):
         e1_embedded_all = F.tanh(embedding)
         batch_size = len(triplets)
         e1_embedded = e1_embedded_all[triplets[:, 0]].unsqueeze(1)
@@ -94,10 +96,11 @@ class ConvTransE(torch.nn.Module):
         if batch_size > 1:
             x = self.bn2(x)
         x = F.relu(x)
-        if partial_embeding is None:
-            x = torch.mm(x, e1_embedded_all.transpose(1, 0))
-        else:
-            x = torch.mm(x, partial_embeding.transpose(1, 0))
+        candidate_repr = e1_embedded_all if partial_embeding is None else partial_embeding
+        # Only replay entity CE opts in. The subject view above stays attached.
+        if candidate_grad_scale != 1.0:
+            candidate_repr = decouple_candidate_gradient(candidate_repr, candidate_grad_scale)
+        x = torch.mm(x, candidate_repr.transpose(1, 0))
         return x
 
     def forward_slow(self, embedding, emb_rel, triplets):

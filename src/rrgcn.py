@@ -9,6 +9,7 @@ import numpy as np
 from rgcn.layers import UnionRGCNLayer, RGCNBlockLayer
 from src.model import BaseRGCN
 from src.decoder import ConvTransE, ConvTransR
+from src.qcdr import effective_candidate_alpha
 from diffusion.difffu_21 import MultiHeadedAttention
 from rgcn.reservoir_sampler import *
 from rgcn.CorruptTriplesGlobal import *
@@ -86,6 +87,11 @@ class RecurrentRGCN(nn.Module):
         self.gpu = gpu
         self.temperature_object=0.5
         self.args=args
+        # A Python setting, not a parameter/buffer or a second entity bank.
+        self.qcdr_candidate_alpha = effective_candidate_alpha(
+            getattr(args, "qcdr_mode", "original"),
+            getattr(args, "qcdr_candidate_alpha", 1.0),
+            getattr(args, "qcdr_target", "entity"))
         # self.initial_h=initial_h
 
         self.w1 = torch.nn.Parameter(torch.Tensor(
@@ -299,7 +305,8 @@ class RecurrentRGCN(nn.Module):
     def loss_of_reply(self, e_embedding, r_embedding, reply,mode='e'):
         if mode == 'e':
             scores_ob = self.decoder_ob.forward(
-                    e_embedding, r_embedding, reply).view(-1, self.num_ents)
+                    e_embedding, r_embedding, reply,
+                    candidate_grad_scale=self.qcdr_candidate_alpha).view(-1, self.num_ents)
             loss = self.loss_e(scores_ob, reply[:, 2])
         elif mode == 'r':
             score_rel = self.rdecoder.forward(
