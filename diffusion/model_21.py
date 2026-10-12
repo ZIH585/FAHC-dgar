@@ -147,7 +147,7 @@ class Att_Diffuse_model(nn.Module):
         # """
 
         # return self.loss_ce(scores, labels.squeeze(-1)) + loss+self.loss(rep_diffu,query_object3)
-        return self.loss_ce(scores, labels[:, 2].squeeze(-1)) + loss
+        return self.loss_ce(scores, labels[:, 2]) + loss
         # return self.loss(noise,rep_diffu)
         # return self.loss(rep_diffu,noise)
 

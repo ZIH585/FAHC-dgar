@@ -16,7 +16,7 @@ import argparse
 from pathlib import Path
 from src.cli import build_arg_parser, validate_args
 from src.runtime import (isolated_rng, deterministic_evaluation, prepare_run,
-                         save_training_state, restore_training_state)
+                         save_training_state, restore_training_state, validate_history_cache)
 from rgcn import utils
 from rgcn.utils import *
 from src.rrgcn import RecurrentRGCN
@@ -262,9 +262,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     data_list.extend(test_list)
     train_list,valid_list,test_list = utils.spilt_data(data_list)
     data_history = args.data_root / args.dataset / "history_snap_v2"
-    missing = [i for i in range(len(train_list)) if not (data_history / f"snap_{i}.pkl").is_file()]
-    if missing:
-        raise FileNotFoundError("Copy the matching Original history_snap_v2 cache before running; missing snapshots: " + str(missing[:5]))
+    validate_history_cache(train_list, data.num_rels, data_history)
     prepare_run(args)
     fitlog.set_log_dir(str(args.run_dir / "fitlog" if args.run_dir else Path(__file__).resolve().parents[1] / "logs"))
     fitlog.add_hyper({key: str(value) if isinstance(value, Path) else value
@@ -495,7 +493,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
         final_train = torch.from_numpy(train_list[final_idx]).long().to(device)
         last_output = [snap for snap in final_train]
 
-        result = test(args, model, train_list + valid_list, test_list,
+        result = test(args, model, train_list, test_list,
                       num_rels, num_nodes, use_cuda, all_ans_list_test,
                       all_ans_list_r_test, model_state_file, static_graph,
                       "test", last_history, last_output, static_graph_diffu,
@@ -736,7 +734,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
         print("Final full-pipeline TEST")
         mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r, last_history, last_output,mrrs,h1s,h3s,h10s,m_,h1,h3,h10 = test(args,
                                                                                        model,
-                                                                                       train_list+valid_list,
+                                                                                       train_list,
                                                                                        test_list,
                                                                                        num_rels,
                                                                                        num_nodes,
