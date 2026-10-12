@@ -1,0 +1,25 @@
+{
+  "log_sha256": {
+    "original": "01840162639fa1dfefcd58dd3f153e12b148f1d66d94e1cc98325972225c9b91",
+    "ecri": "be77c2575e7955fa456acf77d11d25e300f1b4cdfde97eb97bb6736452c60baa"
+  },
+  "namespace_differences": {
+    "run_dir": [
+      "/data1/zihao/DGAR-ECRI/experiment_runs/ICEWS14s-original-s1-20261011_210151",
+      "/data1/zihao/DGAR-ECRI/experiment_runs/ICEWS14s-ecri-s1-20261012_100243"
+    ],
+    "ecri": [
+      false,
+      true
+    ]
+  },
+  "training_progress_elapsed": {
+    "original": "1:09:18",
+    "ecri": "1:18:01"
+  },
+  "prefix_audit": "Local data-only reconstruction, not recovered run-state; remote data/source hashes not available",
+  "prefix_audit_cpu_seconds": 0.76,
+  "cuda_initialized": false,
+  "last_valid_forward_queries": 18,
+  "last_test_forward_queries": 18
+}
