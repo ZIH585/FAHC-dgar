@@ -1,5 +1,8 @@
 # ICEWS14s Original / ECRI seed1 结果分析（2026-10-12）
 
+收到配置和阶段 JSONL 后的补充结论及无训练诊断命令，见
+[门控复核报告](ICEWS14s_ecri_seed1_gate_analysis.md)。下文保留首次仅有终端日志时的分析。
+
 当前 ECRI 没有达到超过 Original 的实体预测目标：TEST pooled filtered entity
 MRR 下降 0.4398 个百分点，旧时间片 macro MRR 下降 0.4468 个百分点；关系预测
 MRR 上升。最新 TEST 时间片有收益，最新 VALIDATION 时间片则下降，不能把局部

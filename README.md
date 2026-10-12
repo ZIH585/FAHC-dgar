@@ -6,6 +6,7 @@ DGAR 基线与 **Evolution-Calibrated Replay Integration (ECRI)** 对照。
 
 - [方法、参数、数据流、验证与正式实验命令](docs/ECRI.md)
 - [Original 来源和两组共同使用的必要修复](docs/BASELINE.md)
+- [seed1 门控复核与固定 checkpoint 验证诊断](docs/analysis/ICEWS14s_ecri_seed1_gate_analysis.md)
 
 另一台服务器使用独立目录，保留旧实验目录：
 

@@ -1,0 +1,68 @@
+{
+  "run_hashes_match": {
+    "source_sha256": true,
+    "data_sha256": true,
+    "history_sha256": true
+  },
+  "setting_differences": {
+    "ecri": [
+      false,
+      true
+    ]
+  },
+  "record_count": 364,
+  "active_stage_count": 305,
+  "first_active_stage": 60,
+  "duplicate_or_missing_stages": false,
+  "statistics": {
+    "reliable_entities": {
+      "min": 123,
+      "mean": 145.75081967213114,
+      "max": 173
+    },
+    "role_excess_mean": {
+      "min": 0.05092615261673927,
+      "mean": 0.069365800074378,
+      "max": 0.09384577721357346
+    },
+    "churn_excess_mean": {
+      "min": 0.03955673798918724,
+      "mean": 0.04693689848311612,
+      "max": 0.05666549503803253
+    },
+    "confidence_mean": {
+      "min": 0.5150461196899414,
+      "mean": 0.5367303521906743,
+      "max": 0.5593332052230835
+    }
+  },
+  "final_gate": {
+    "gate_bias": 1.2790297269821167,
+    "gate_role_weight": 1.3066259622573853,
+    "gate_churn_weight": 1.4392716884613037
+  },
+  "checkpoint_files_available_locally": false,
+  "warmup_slopes_stage59": {
+    "gate_role_weight": 0.8354490995407104,
+    "gate_churn_weight": 0.8354490995407104
+  },
+  "warmup_drift_explanation": "Adam coupled weight decay can update gate parameters with zero task gradient; no contribution to fusion when c=0",
+  "final_zero_evolution_adaptive_branch": 0.7822845692267115,
+  "local_hashes": {
+    "source_sha256": "a5eebf500e0ddc62136d9c46ba07d731fcfee79039a1ef2998290aed60ef5858",
+    "data_sha256": "a81dea25dfbbd5b7420563e9291e356d8e14971cab73a409ed2efbcf514aa038",
+    "history_sha256": "6185eadbb881aacd9cddf566fd1cfcae9b0adacaf3f81a5adc8db032fd6eb804"
+  },
+  "training_hashes": {
+    "source_sha256": "c32134fd804b15db3c38a511749373ecfd66561b5e5be2b12b0f6e8bbd2d97aa",
+    "data_sha256": "a81dea25dfbbd5b7420563e9291e356d8e14971cab73a409ed2efbcf514aa038",
+    "history_sha256": "6185eadbb881aacd9cddf566fd1cfcae9b0adacaf3f81a5adc8db032fd6eb804"
+  },
+  "local_matches_training": {
+    "source_sha256": false,
+    "data_sha256": true,
+    "history_sha256": true
+  },
+  "decomposition_scope": "Final trained gate applied to strictly past features, as in final evaluation; supported entities, not actual HCP/query-weighted rows; alpha0 absent so effective absolute alpha cannot be recovered",
+  "selected_stages_all_match_logged_statistics": true
+}
