@@ -1,5 +1,8 @@
 # ECRI seed1 阶段统计复核与下一步（2026-10-12）
 
+固定 checkpoint 诊断已完成，最终项目决定见
+[ECRI 最终评估与停止决定](ICEWS14s_ecri_seed1_final_decision.md)。下文记录诊断前的分析与预设标准。
+
 现有记录排除了“配置不同”与“ECRI 根本没接上”的主要疑点。更明确的发现是：
 最终门控主要受 bias 驱动，实体演化项的额外系数影响较小。实体 forecasting 的
 现有 TEST/VALIDATION 主指标仍下降，当前版本没有超过 Original 的证据。

@@ -1,0 +1,280 @@
+{
+  "decision": "Stop further tuning/retraining of the current ECRI design; fusion calibration remains an exploratory lead, not a validated improvement",
+  "input_sha256": {
+    "summary.json": "9ea4e8b2d13a55a8a6690c822c91e0f4629b87ff336d54f314eab79ff2ebbc13",
+    "queries.csv": "5e70553bffed801664a63966a58f2b290f16ad60cd9b80b8f835780d17f82d9e",
+    "ICEWS14s-ecri-gate-diagnostic-20261012_131956.log": "8669d19d4ec224adfe343daaf3ecb9353b1e0346a9306688e7f560874f19b88f"
+  },
+  "query_count": 96,
+  "forward_fact_count": 48,
+  "stage_count": 3,
+  "source_match_confirmed": true,
+  "source_override_used": false,
+  "checkpoint_gate_matches_stage_log": true,
+  "fixed_checkpoint_and_replay_confirmed": true,
+  "nonempty_hcp": true,
+  "no_parameter_gradients": true,
+  "hcp_facts_by_stage": {
+    "90": 322,
+    "180": 200,
+    "300": 413
+  },
+  "shuffle_changed_min": 0.9166666666666666,
+  "shuffle_changed_max": 0.986013986013986,
+  "all_five_shuffle_mrr_above_full": true,
+  "bootstrap_scope": "Exploratory, conditional on the three selected slices; resamples forward/inverse pairs within slices; does not account for model seed variance or dependence between facts sharing entities",
+  "paired": {
+    "full_minus_bias_only": {
+      "mean_rr_delta": -0.0011090377777818706,
+      "better": 6,
+      "equal": 80,
+      "worse": 10,
+      "conditional_pair_bootstrap_95_percentile_interval": [
+        -0.005833668922421824,
+        0.002429112058494872
+      ],
+      "stage_deltas": {
+        "90": 8.268352592458831e-05,
+        "180": -0.00017704494013699054,
+        "300": -0.0032327519191332095
+      },
+      "top_absolute_contributions": [
+        {
+          "snapshot": 300,
+          "forward_row": 14,
+          "inverse": 1,
+          "rank_a": 10,
+          "rank_b": 5,
+          "delta_rr": -0.1
+        },
+        {
+          "snapshot": 300,
+          "forward_row": 14,
+          "inverse": 0,
+          "rank_a": 4,
+          "rank_b": 3,
+          "delta_rr": -0.08333333333333331
+        },
+        {
+          "snapshot": 300,
+          "forward_row": 10,
+          "inverse": 1,
+          "rank_a": 3,
+          "rank_b": 4,
+          "delta_rr": 0.08333333333333331
+        },
+        {
+          "snapshot": 300,
+          "forward_row": 32,
+          "inverse": 1,
+          "rank_a": 15,
+          "rank_b": 13,
+          "delta_rr": -0.010256410256410262
+        },
+        {
+          "snapshot": 300,
+          "forward_row": 15,
+          "inverse": 0,
+          "rank_a": 11,
+          "rank_b": 12,
+          "delta_rr": 0.007575757575757583
+        }
+      ]
+    },
+    "full_minus_scalar_alpha": {
+      "mean_rr_delta": -0.0011297085387707226,
+      "better": 21,
+      "equal": 56,
+      "worse": 19,
+      "conditional_pair_bootstrap_95_percentile_interval": [
+        -0.021256672740310838,
+        0.01786896862003576
+      ],
+      "stage_deltas": {
+        "90": -0.0003928483435217565,
+        "180": 0.002253651229276004,
+        "300": -0.005249928502066414
+      },
+      "top_absolute_contributions": [
+        {
+          "snapshot": 300,
+          "forward_row": 16,
+          "inverse": 0,
+          "rank_a": 1,
+          "rank_b": 2,
+          "delta_rr": 0.5
+        },
+        {
+          "snapshot": 300,
+          "forward_row": 9,
+          "inverse": 1,
+          "rank_a": 2,
+          "rank_b": 1,
+          "delta_rr": -0.5
+        },
+        {
+          "snapshot": 300,
+          "forward_row": 18,
+          "inverse": 1,
+          "rank_a": 2,
+          "rank_b": 1,
+          "delta_rr": -0.5
+        },
+        {
+          "snapshot": 300,
+          "forward_row": 10,
+          "inverse": 1,
+          "rank_a": 3,
+          "rank_b": 9,
+          "delta_rr": 0.2222222222222222
+        },
+        {
+          "snapshot": 300,
+          "forward_row": 28,
+          "inverse": 1,
+          "rank_a": 2,
+          "rank_b": 3,
+          "delta_rr": 0.16666666666666669
+        }
+      ]
+    },
+    "alpha075_minus_full": {
+      "mean_rr_delta": 0.017309977178161427,
+      "better": 27,
+      "equal": 51,
+      "worse": 18,
+      "conditional_pair_bootstrap_95_percentile_interval": [
+        -0.012956107209054362,
+        0.04386917023516573
+      ],
+      "stage_deltas": {
+        "90": 0.0179291093475187,
+        "180": 0.011489630873553723,
+        "300": 0.022511191313411866
+      },
+      "top_absolute_contributions": [
+        {
+          "snapshot": 180,
+          "forward_row": 10,
+          "inverse": 0,
+          "rank_a": 8,
+          "rank_b": 1,
+          "delta_rr": -0.875
+        },
+        {
+          "snapshot": 90,
+          "forward_row": 15,
+          "inverse": 0,
+          "rank_a": 1,
+          "rank_b": 3,
+          "delta_rr": 0.6666666666666667
+        },
+        {
+          "snapshot": 90,
+          "forward_row": 15,
+          "inverse": 1,
+          "rank_a": 2,
+          "rank_b": 1,
+          "delta_rr": -0.5
+        },
+        {
+          "snapshot": 180,
+          "forward_row": 27,
+          "inverse": 0,
+          "rank_a": 1,
+          "rank_b": 2,
+          "delta_rr": 0.5
+        },
+        {
+          "snapshot": 180,
+          "forward_row": 12,
+          "inverse": 1,
+          "rank_a": 1,
+          "rank_b": 2,
+          "delta_rr": 0.5
+        }
+      ]
+    },
+    "current_only_minus_full": {
+      "mean_rr_delta": -0.1224765741147779,
+      "better": 21,
+      "equal": 31,
+      "worse": 44,
+      "conditional_pair_bootstrap_95_percentile_interval": [
+        -0.1687200773513945,
+        -0.07590122623658212
+      ],
+      "stage_deltas": {
+        "90": -0.10706712382326229,
+        "180": -0.16952724793924498,
+        "300": -0.09083535058182643
+      },
+      "top_absolute_contributions": [
+        {
+          "snapshot": 300,
+          "forward_row": 23,
+          "inverse": 1,
+          "rank_a": 42,
+          "rank_b": 1,
+          "delta_rr": -0.9761904761904762
+        },
+        {
+          "snapshot": 90,
+          "forward_row": 19,
+          "inverse": 1,
+          "rank_a": 8,
+          "rank_b": 1,
+          "delta_rr": -0.875
+        },
+        {
+          "snapshot": 300,
+          "forward_row": 0,
+          "inverse": 1,
+          "rank_a": 8,
+          "rank_b": 1,
+          "delta_rr": -0.875
+        },
+        {
+          "snapshot": 90,
+          "forward_row": 15,
+          "inverse": 1,
+          "rank_a": 5,
+          "rank_b": 1,
+          "delta_rr": -0.8
+        },
+        {
+          "snapshot": 180,
+          "forward_row": 20,
+          "inverse": 1,
+          "rank_a": 5,
+          "rank_b": 1,
+          "delta_rr": -0.8
+        }
+      ]
+    }
+  },
+  "checkpoint_alpha": 0.928480327129364,
+  "actual_directly_gated_query_subjects": {
+    "count": 47,
+    "mean_full_alpha": 0.8470585375517224,
+    "mean_bias_only_alpha": 0.8279027548599599
+  },
+  "query_group_summary": {
+    "low": {
+      "queries": 28,
+      "median_threshold": 0.14170625805854797,
+      "mean_rr_delta_alpha075_minus_alpha025": 0.11101898077253444,
+      "mean_rr_delta_full_minus_bias_only": 0.0027815341382619774
+    },
+    "high": {
+      "queries": 25,
+      "median_threshold": 0.14170625805854797,
+      "mean_rr_delta_alpha075_minus_alpha025": 0.15189015809608938,
+      "mean_rr_delta_full_minus_bias_only": -0.00778146853146853
+    }
+  },
+  "local_source_diff_files": [
+    "src/main.py"
+  ],
+  "scope_limit": "Sampled VALIDATION inference interventions on an ECRI-trained checkpoint; not a retraining ablation or full benchmark"
+}
