@@ -330,7 +330,7 @@ class RecurrentRGCN(nn.Module):
         all_triples = torch.cat([triples, inverse_triples])
         return all_triples
 
-    def get_loss(self, glist, triples, static_graph, use_cuda,known_entities=None,negative_rate=None, model_output=None,model_output_x_t=None,tag=None, diffuc=None, output_reply_triple=None, current_query_history_graph=None,mode=None,inc_model=None):
+    def get_loss(self, glist, triples, static_graph, use_cuda,known_entities=None,negative_rate=None, model_output=None,model_output_x_t=None,tag=None, diffuc=None, output_reply_triple=None, current_query_history_graph=None,mode=None,inc_model=None, replay_balancer=None):
         """
         :param glist:
         :param triplets:
@@ -344,6 +344,7 @@ class RecurrentRGCN(nn.Module):
         loss_rel = self.dynamic_emb.new_zeros(1)
         loss_static = self.dynamic_emb.new_zeros(1)
         loss_Reply = self.dynamic_emb.new_zeros(1)
+        current_entity_loss = replay_forward_loss = replay_inverse_loss = None
         
         if model_output is not None:
             entity_all, ent_embeding = self.select_entity(
@@ -364,10 +365,12 @@ class RecurrentRGCN(nn.Module):
         if self.entity_prediction:
             scores_ob = self.decoder_ob.forward(
                 pre_emb, r_emb, all_triples).view(-1, self.num_ents)
-            loss_ent += self.loss_e(scores_ob, all_triples[:, 2])
+            current_entity_loss = self.loss_e(scores_ob, all_triples[:, 2])
+            loss_ent += current_entity_loss
             
         if model_output is not None:
-            loss_ent += self.loss_of_reply(pre_emb,r_emb,output_reply_triple,mode='e')
+            replay_forward_loss = self.loss_of_reply(pre_emb,r_emb,output_reply_triple,mode='e')
+            loss_ent += replay_forward_loss
 
         if self.relation_prediction:
             score_rel = self.rdecoder.forward(
@@ -375,8 +378,13 @@ class RecurrentRGCN(nn.Module):
             loss_rel += self.loss_r(score_rel, all_triples[:, 1])
         
         if model_output is not None:
-            loss_ent += self.args.mu*self.loss_of_reply(pre_emb,r_emb,all_output_reply_triple,mode='e')
+            replay_inverse_loss = self.args.mu*self.loss_of_reply(pre_emb,r_emb,all_output_reply_triple,mode='e')
+            loss_ent += replay_inverse_loss
             loss_rel += self.args.mu_r*self.loss_of_reply(pre_emb,r_emb,all_output_reply_triple,mode='r')
+
+        if replay_balancer is not None and self.training and torch.is_grad_enabled():
+            loss_ent = replay_balancer.combine(loss_ent, current_entity_loss,
+                replay_forward_loss, replay_inverse_loss, pre_emb)
 
         if self.use_static:
             if self.discount == 1:

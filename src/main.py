@@ -15,6 +15,7 @@ import itertools
 import argparse
 from pathlib import Path
 from src.cli import build_arg_parser, validate_args
+from src.grb import BalanceConfig, ReplayBalancer
 from src.runtime import (PROTOCOL, prepare_run, restore_evaluation_rng,
                          save_training_state, restore_training_state, validate_history_cache)
 from rgcn import utils
@@ -244,6 +245,9 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
         args.n_bases = n_bases
     validate_args(args)
     print(f"Baseline protocol: {PROTOCOL}")
+    print(f"GRB mode: {args.grb_mode}")
+    grb_controller = (ReplayBalancer(BalanceConfig.from_args(args))
+                      if args.grb_mode != 'original' else None)
     # Upstream declares --seed but never applies it. No flag preserves that
     # initialization policy; an explicit seed is a documented reproducibility opt-in.
     if args.seed is not None:
@@ -558,6 +562,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
             for batch_idx, train_sample_num in enumerate(tqdm(idx)):
                 if train_sample_num == 0:
                     continue
+                if args.grb_mode != 'original':
+                    grb_controller.start_stage(train_sample_num)
                 output = train_list[train_sample_num:train_sample_num+1]
                 if train_sample_num - args.train_history_len < 0:
                     input_list = train_list[0: train_sample_num]
@@ -607,7 +613,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 for epoch in range(args.regcn_epochs):
                     model.train()
                     loss_e, loss_r, loss_static, emebding_entity,loss_reply = model.get_loss(
-                        history_glist, output, static_graph, use_cuda, model_output=diffu_rep,model_output_x_t=model_output_o, tag=output_reply_triple, diffuc=args.diffuc, output_reply_triple=output_reply_triple, current_query_history_graph=None)
+                        history_glist, output, static_graph, use_cuda, model_output=diffu_rep,model_output_x_t=model_output_o, tag=output_reply_triple, diffuc=args.diffuc, output_reply_triple=output_reply_triple, current_query_history_graph=None,
+                        replay_balancer=grb_controller if args.grb_mode != 'original' else None)
                     
                     loss = args.task_weight*loss_e+ \
                         (1-args.task_weight)*loss_r + loss_static
@@ -773,6 +780,10 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 # LAST optimizer states, exactly as in the uninterrupted loop.
                 save_training_state(args, train_sample_num, model_repre, model_diffpre,
                                     optimizer, optimizer_diffu, run_device, auxiliary=None)
+                if args.grb_mode != 'original':
+                    summary = grb_controller.write_stage(args.run_dir)
+                    print(f"GRB stage {train_sample_num}: updates={summary['measured_updates']} "
+                          f"mean_weight={summary.get('mean_weight', 1.0):.4f}", flush=True)
 
         print("Final full-pipeline TEST")
         mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r, last_history, last_output,mrrs,h1s,h3s,h10s,m_,h1,h3,h10 = test(args,

@@ -1,10 +1,12 @@
-# DGAR Original baseline
+# DGAR + Gradient-balanced Replay (GRB)
 
-Branch: `codex/original-baseline`. Protocol: `official-dgar-v1`.
+Branch: `codex/grb`, from `codex/original-baseline@23dd43d`.
+Protocol: `official-dgar-v1`. Default method mode is OFF (`--grb-mode original`).
 Pinned author source: `zyzhang11/DGAR@c5bbc87467bb22d266b664d30eefb8184c1d3104`.
 
 Read [the baseline audit](docs/BASELINE.md) before running experiments or branching
-a new method. This branch contains no experimental method or KD/selector flags.
+a new method. See [GRB definition, checks and three-group experiments](docs/GRB.md).
+No previous FAHC/ECRI/QCDR implementation or KD/selector flags are included.
 
 ```bash
 # CPU checks only; no dataset or GPU training.

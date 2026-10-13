@@ -206,10 +206,21 @@ def build_arg_parser():
     parser.add_argument("--run-dir", type=Path, default=None, help="Separate config, checkpoints and outputs for this run")
     parser.add_argument("--resume", type=Path, default=None, help="Resume a completed chronological stage from latest.pt")
     parser.add_argument("--final-validation", action="store_true", help="Also report final full-pipeline validation")
+    parser.add_argument('--grb-mode', choices=('original', 'fixed', 'adaptive'), default='original',
+                        help='OFF / fixed entity replay control / shared-representation gradient balancing')
+    parser.add_argument('--grb-fixed-weight', type=float, default=0.5)
+    parser.add_argument('--grb-min-weight', type=float, default=0.5)
+    parser.add_argument('--grb-target-ratio', type=float, default=1.0)
+    parser.add_argument('--grb-conflict-scale', type=float, default=1.0)
+    parser.add_argument('--grb-ema', type=float, default=0.8)
     return parser
 
 
 def validate_args(args):
+    from src.grb import BalanceConfig
+    BalanceConfig.from_args(args)
+    if args.grb_mode != 'original' and (not args.diffuc or args.task_weight == 0):
+        raise ValueError('GRB requires enabled replay and a positive entity task weight')
     for name in ("n_epochs", "regcn_epochs", "diffu_epochs", "train_history_len", "test_history_len", "n_hidden", "hidden_size", "attn_heads", "diffusion_steps"):
         if getattr(args, name) < 1:
             raise ValueError(f"{name} must be positive")
