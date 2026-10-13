@@ -169,7 +169,7 @@ class Att_Diffuse_model(nn.Module):
                 for i in reply_time_index:
                     current_query_history_triples.update(tuple(arr) for arr in train_list[i])
                 if len(current_query_history_triples)> args.reply_batch_num:
-                    current_query_history_triples=random.sample(sorted(current_query_history_triples), args.reply_batch_num)
+                    current_query_history_triples=random.sample(list(current_query_history_triples), args.reply_batch_num)
             else:
                 current_query_history_triples = set()
                 if train_sample_num-2<args.reply_batch:
@@ -195,7 +195,7 @@ class Att_Diffuse_model(nn.Module):
             
             if  train_sample_num >= 2:
                 output_reply_triple = torch.as_tensor(
-                    sorted(current_query_history_triples), dtype=torch.long,
+                    list(current_query_history_triples), dtype=torch.long,
                     device=output.device).reshape(-1, 3)
                 
                 if len(output_reply_triple)>0 and args.delete_feature_reply is False:

@@ -46,7 +46,7 @@ class ConvTransR(torch.nn.Module):
         x = x.view(batch_size, -1)
         x = self.fc(x)
         x = self.hidden_drop(x)
-        if batch_size > 1:
+        if batch_size > 1 or not self.training:
             x = self.bn2(x)
         x = F.relu(x)
         x = torch.mm(x, emb_rel.transpose(1, 0))

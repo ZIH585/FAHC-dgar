@@ -1,0 +1,3 @@
+# Exact upstream reference bytes are verified by Git blob SHA in CPU tests.
+# Preserve author whitespace and line endings rather than normalizing fixtures.
+tests/reference/*.py.txt -text -whitespace

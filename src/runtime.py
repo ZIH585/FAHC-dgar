@@ -1,15 +1,16 @@
-"""Shared reproducibility and stage checkpoint helpers for Original DGAR."""
+"""Run isolation and checkpoints for the pinned author's DGAR protocol."""
 import copy
 import hashlib
 import json
 import pickle
 import random
-from contextlib import contextmanager
-from functools import wraps
 from pathlib import Path
 
 import numpy as np
 import torch
+
+PROTOCOL = 'official-dgar-v1'
+UPSTREAM_COMMIT = 'c5bbc87467bb22d266b664d30eefb8184c1d3104'
 
 
 def cpu_copy(value):
@@ -38,28 +39,6 @@ def restore_rng(state, device):
     torch.set_rng_state(state['torch'])
     if torch.device(device).type == 'cuda' and 'cuda' in state:
         torch.cuda.set_rng_state(state['cuda'], device)
-
-
-@contextmanager
-def isolated_rng(seed, device):
-    state = rng_state(device)
-    try:
-        random.seed(seed)
-        np.random.seed(seed % (2**32))
-        torch.default_generator.manual_seed(seed)
-        if torch.device(device).type == 'cuda':
-            torch.cuda.default_generators[torch.device(device).index].manual_seed(seed)
-        yield
-    finally:
-        restore_rng(state, device)
-
-
-def deterministic_evaluation(function):
-    @wraps(function)
-    def wrapped(args, model, *positional, **keywords):
-        with isolated_rng(args.seed + 7000003, next(model.parameters()).device):
-            return function(args, model, *positional, **keywords)
-    return wrapped
 
 
 def settings(args):
@@ -112,6 +91,8 @@ def prepare_run(args):
     if args.add_static_graph:
         files.append(data / 'e-w-graph.txt')
     args._provenance = {
+        'protocol': PROTOCOL,
+        'upstream_commit': UPSTREAM_COMMIT,
         'settings': settings(args),
         'source_sha256': fingerprint([p for folder in ('src', 'diffusion', 'rgcn')
                                       for p in (root / folder).glob('*.py')], root),
@@ -138,7 +119,10 @@ def save_training_state(args, stage, model, diffusion, optimizer, diffusion_opti
                         device, auxiliary):
     if args.run_dir is None:
         return
-    payload = {'version': 1, 'completed_stage': stage, 'provenance': args._provenance,
+    # model/diffusion are the just-loaded BEST feature-generator weights. Adam
+    # is deliberately from the LAST update, not the best epoch. Never pair it
+    # with an earlier Adam snapshot: that is a different training algorithm.
+    payload = {'version': 2, 'completed_stage': stage, 'provenance': args._provenance,
                'model': cpu_copy(model.state_dict()), 'diffusion': cpu_copy(diffusion.state_dict()),
                'optimizer': cpu_copy(optimizer.state_dict()),
                'diffusion_optimizer': cpu_copy(diffusion_optimizer.state_dict()),
@@ -152,7 +136,7 @@ def restore_training_state(args, model, diffusion, teacher, diffusion_teacher,
                            optimizer, diffusion_optimizer, device):
     # Full local training state includes Python/NumPy RNG tuples.
     saved = torch.load(args.resume, map_location='cpu', weights_only=False)
-    if saved.get('version') != 1 or saved['provenance'] != args._provenance:
+    if saved.get('version') != 2 or saved['provenance'] != args._provenance:
         raise ValueError('Resume config/source/data/cache differ from this checkpoint')
     model.load_state_dict(saved['model'])
     teacher.load_state_dict(saved['model'])
@@ -160,5 +144,30 @@ def restore_training_state(args, model, diffusion, teacher, diffusion_teacher,
     diffusion_teacher.load_state_dict(saved['diffusion'])
     optimizer.load_state_dict(saved['optimizer'])
     diffusion_optimizer.load_state_dict(saved['diffusion_optimizer'])
+    # A crash in the next stage may already have overwritten the best files.
+    # Restore these as well: the original loop reloads them before training.
+    for name, key in (('model.pt', 'model'), ('diffusion.pt', 'diffusion')):
+        temporary = args.run_dir / (name + '.tmp')
+        torch.save(saved[key], temporary)
+        temporary.replace(args.run_dir / name)
     restore_rng(saved['rng'], device)
     return int(saved['completed_stage']) + 1, saved['auxiliary']
+
+
+def restore_evaluation_rng(args, device, final_stage):
+    """Reproduce the stream at entry to final TEST, without an evaluation seed."""
+    saved = torch.load(args.run_dir / 'latest.pt', map_location='cpu', weights_only=False)
+    if (saved.get('version') != 2 or saved['provenance'] != args._provenance
+            or saved['completed_stage'] != final_stage):
+        raise ValueError('Final TEST requires a completed run from this baseline protocol')
+    # Refuse stale/partially overwritten files rather than pair a saved RNG with
+    # different weights. This check does not consume the experiment RNG stream.
+    for name, key in (('model.pt', 'model'), ('diffusion.pt', 'diffusion')):
+        if key == 'diffusion' and not args.diffuc:
+            continue
+        weights = torch.load(args.run_dir / name, map_location='cpu', weights_only=True)
+        expected = saved[key]
+        if weights.keys() != expected.keys() or any(
+                not torch.equal(weights[k], expected[k]) for k in expected):
+            raise ValueError(f'{name} differs from completed latest.pt; resume the run first')
+    restore_rng(saved['rng'], device)

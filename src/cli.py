@@ -25,8 +25,8 @@ def build_arg_parser():
                         help="gpu")
     parser.add_argument("--batch-size", type=int, default=1,
                         help="batch-size")
-    parser.add_argument("--seed", type=int, default=1,
-                        help="random seed")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Opt-in Python/NumPy/Torch seed; omitted preserves upstream initialization policy")
     parser.add_argument("-d", "--dataset", type=str,  default="ICEWS14s",
                         help="dataset to use")
     parser.add_argument("--test", action='store_true', default=False,
@@ -219,7 +219,7 @@ def validate_args(args):
         args.diffuc = "add"
     if args.hidden_size != args.n_hidden or args.n_hidden % args.attn_heads:
         raise ValueError("hidden sizes must match and divide evenly into attention heads")
-    if args.gpu < -1 or args.seed < 0 or args.reply_batch < 0 or args.reply_batch_num < 1:
+    if args.gpu < -1 or (args.seed is not None and args.seed < 0) or args.reply_batch < 0 or args.reply_batch_num < 1:
         raise ValueError("invalid device, seed or replay size")
     if not 0 <= args.task_weight <= 1 or not math.isfinite(args.lr) or args.lr <= 0:
         raise ValueError("invalid task weight or learning rate")

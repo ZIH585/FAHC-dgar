@@ -15,7 +15,7 @@ import itertools
 import argparse
 from pathlib import Path
 from src.cli import build_arg_parser, validate_args
-from src.runtime import (isolated_rng, deterministic_evaluation, prepare_run,
+from src.runtime import (PROTOCOL, prepare_run, restore_evaluation_rng,
                          save_training_state, restore_training_state, validate_history_cache)
 from rgcn import utils
 from rgcn.utils import *
@@ -39,7 +39,6 @@ def getReverseSample(test_triplets, num_rels):
     return a_triples
 
 
-@deterministic_evaluation
 @torch.no_grad()
 def test(args, model, history_list, test_list, num_rels, num_nodes,
          use_cuda, all_ans_list, all_ans_r_list, model_name,
@@ -95,7 +94,11 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
     for time_idx, test_snap in enumerate(tqdm(test_list)):
         if time_idx==0:
             continue
-        input_list = his_list[max(0, time_idx - args.test_history_len):time_idx]
+        # Match the author's history-window condition, including nondefault lengths.
+        if time_idx - args.train_history_len < 0:
+            input_list = his_list[:time_idx]
+        else:
+            input_list = his_list[time_idx - args.test_history_len:time_idx]
         history_glist = [build_sub_graph(
             num_nodes, num_rels, g, use_cuda, args.gpu) for g in input_list]
         
@@ -120,11 +123,11 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
         test_triples_input = test_triples_input.to(device)
 
         sequence = None
-        output_reply_triple = torch.as_tensor(sorted(current_query_history_triples),
+        output_reply_triple = torch.as_tensor(list(current_query_history_triples),
             dtype=torch.long, device=device).reshape(-1, 3)
         if args.diffuc and len(output_reply_triple)>0 and args.delete_feature_reply is False:
             scores, diffu_rep, weights, t, _, ent_emb, noise, _, targets = model_diffpre(
-                sequence, output_reply_triple, args, False, use_cuda, static_graph=static_graph_diffu, ct=time_idx, model=model, history_glist=history_glist, triples=None)
+                sequence, output_reply_triple, args, False, use_cuda, static_graph=static_graph_diffu, ct=time_idx, model=model, history_glist=last_history, triples=last_output)
 
             model_output_o=diffu_rep[:,-1,:]
         else:
@@ -240,14 +243,20 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     if n_bases is not None:
         args.n_bases = n_bases
     validate_args(args)
-    random.seed(args.seed)
-    np.random.seed(args.seed % (2**32))
-    torch.default_generator.manual_seed(args.seed)
+    print(f"Baseline protocol: {PROTOCOL}")
+    # Upstream declares --seed but never applies it. No flag preserves that
+    # initialization policy; an explicit seed is a documented reproducibility opt-in.
+    if args.seed is not None:
+        random.seed(args.seed)
+        np.random.seed(args.seed % (2**32))
+        torch.default_generator.manual_seed(args.seed)
+    print(f"Seed policy: {'upstream (no explicit reseeding)' if args.seed is None else args.seed}")
     use_cuda = args.gpu >= 0 and torch.cuda.is_available()
     run_device = torch.device(f"cuda:{args.gpu}" if use_cuda else "cpu")
     if use_cuda:
         torch.cuda.set_device(args.gpu)
-        torch.cuda.manual_seed(args.seed)
+        if args.seed is not None:
+            torch.cuda.manual_seed(args.seed)
     # load graph data
     print("loading graph data")
     data_list = []
@@ -443,8 +452,11 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     for p in model_diffpre.parameters():
         p.requires_grad_(False)
 
-    model_repre.eval()
-    model_diffpre.eval()
+    # Upstream keeps both feature generators in TRAIN mode, even at final TEST.
+    # Freezing parameters/no_grad saves memory; eval() would also change dropout
+    # and BatchNorm and is therefore a different baseline.
+    model_repre.train()
+    model_diffpre.train()
 
     fitlog.add_other(model, "model")
     fitlog.add_other(diffu, "diffu")
@@ -483,7 +495,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
         # into the feature generator before calling test().
         if args.diffuc:
             model_diffpre.load_state_dict(torch.load(diffu_model_state_file, map_location="cpu", weights_only=True))
-        model_diffpre.eval()
+        if args.run_dir:
+            restore_evaluation_rng(args, run_device, len(train_list) - 1)
 
         final_idx = len(train_list) - 1
         input_list = train_list[max(0, final_idx - args.train_history_len):final_idx]
@@ -493,12 +506,19 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
         final_train = torch.from_numpy(train_list[final_idx]).long().to(device)
         last_output = [snap for snap in final_train]
 
+        print("Final full-pipeline TEST")
         result = test(args, model, train_list, test_list,
                       num_rels, num_nodes, use_cuda, all_ans_list_test,
                       all_ans_list_r_test, model_state_file, static_graph,
                       "test", last_history, last_output, static_graph_diffu,
                       model_diffpre)
         mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r = result[:4]
+        if args.final_validation:
+            print("Final full-pipeline VALIDATION (supplementary; after TEST)")
+            test(args, model, train_list, valid_list, num_rels, num_nodes, use_cuda,
+                 all_ans_list_valid, all_ans_list_r_valid, model_state_file, static_graph,
+                 "test", result[4], result[5], static_graph_diffu, model_diffpre)
+        fitlog.finish()
     else:
         print("----------------------------------------start training----------------------------------------\n")
         best_mrr = 0
@@ -575,6 +595,10 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 # best_mrr=0
                 early_stopping = EarlyStopping(patience=5, verbose=False, path=model_state_file)
                 early_stopping_dif = EarlyStopping(patience=5, verbose=False, path=diffu_model_state_file)
+                if train_sample_num > 1:
+                    # Author protocol: roll back weights only. Adam retains all
+                    # updates, including those after the best validation epoch.
+                    model.load_state_dict(torch.load(model_state_file, map_location="cpu", weights_only=True))
                 if diffu_rep is not None:
                     model_output_o=diffu_rep[:,-1,:]
                 else:
@@ -605,7 +629,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     diffu_rep_test=None
                     output_reply_triple_test=None
                     if args.delete_feature_reply is False:
-                        with isolated_rng(args.seed + 3000017 * train_sample_num, run_device), torch.no_grad():
+                        with torch.no_grad():
                             _, diffu_rep_test, output_reply_triple_test = \
                                 model_diffpre.gereration_feature(
                                     args,
@@ -628,12 +652,31 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                         output_reply_triple_test
                     )
                     
-                    early_stopping(mrr, model, optimizer)
+                    early_stopping(mrr, model)
                     if early_stopping.early_stop:
                         break
                     
                           
                 
+                # Upstream executes this diagnostic before final diffusion training.
+                # It consumes RNG / generator buffers; removing it changes training.
+                # Its TEST metric is printed only, never used for early stopping.
+                if train_sample_num == idx[-1]:
+                    diffu_rep_test = output_reply_triple_test = None
+                    test_triples_input = torch.as_tensor(test_list[train_sample_num], dtype=torch.long, device=run_device)
+                    if args.delete_feature_reply is False:
+                        with torch.no_grad():
+                            _, diffu_rep_test, output_reply_triple_test = model_diffpre.gereration_feature(
+                                args, train_sample_num, model_diffpre, model_repre,
+                                last_history, last_output, static_graph_diffu,
+                                test_list[train_sample_num], test_triples_input, use_cuda, train_list)
+                    mrr, hits, _ = test_single(
+                        args, model, history_glist, test_triples_input, train_sample_num,
+                        num_rels, num_nodes, use_cuda, all_ans_list_test, static_graph,
+                        diffu_rep_test, model_output_o, output_reply_triple_test)
+                    print("Upstream last-stage TEST diagnostic (before diffusion):",
+                          mrr.item(), *(hit.item() for hit in hits))
+
                 # diffu
                 if args.diffuc:
 
@@ -643,6 +686,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     emebding_entity = emebding_entity.detach()
                     # best_loss=10000
                     mrr_diff=0
+                    if train_sample_num > 1:
+                        diffu.load_state_dict(torch.load(diffu_model_state_file, map_location="cpu", weights_only=True))
                     for epoch in range(args.diffu_epochs):
                         diffu.train()
                         scores, diffu_rep_1, weights, t, mask_seq,emb_ent,noise,query_object3,_ = diffu(sequence,true_triples,args, True, use_cuda,static_graph_diffu,train_sample_num,model_output=diffu_rep, targets=output_reply_triple)
@@ -673,7 +718,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                             num_rels
                         )
 
-                        with isolated_rng(args.seed + 4000037 * train_sample_num, run_device), torch.no_grad():
+                        with torch.no_grad():
 
                             diffu_reps1 = []
 
@@ -710,7 +755,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
 
                         args.vl = False
 
-                        early_stopping_dif(mrr, diffu, optimizer_diffu)
+                        early_stopping_dif(mrr, diffu)
 
                         if early_stopping_dif.early_stop:
                             break
@@ -720,15 +765,13 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 last_output = [snap for snap in output]
                 
                 checkpoint = torch.load(model_state_file, map_location="cpu", weights_only=True)
-                model.load_state_dict(checkpoint)
                 model_repre.load_state_dict(checkpoint)
-                optimizer.load_state_dict(early_stopping.optimizer_state)
                 if args.diffuc:
                     checkpoint_diffu = torch.load(diffu_model_state_file, map_location="cpu", weights_only=True)
-                    diffu.load_state_dict(checkpoint_diffu)
                     model_diffpre.load_state_dict(checkpoint_diffu)
-                    optimizer_diffu.load_state_dict(early_stopping_dif.optimizer_state)
-                save_training_state(args, train_sample_num, model, diffu,
+                # The next stage starts from these BEST feature weights and the
+                # LAST optimizer states, exactly as in the uninterrupted loop.
+                save_training_state(args, train_sample_num, model_repre, model_diffpre,
                                     optimizer, optimizer_diffu, run_device, auxiliary=None)
 
         print("Final full-pipeline TEST")
@@ -749,7 +792,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                                                                                        static_graph_diffu=static_graph_diffu,
                                                                                        model_diffpre=model_diffpre)
         if args.final_validation:
-            print("Final full-pipeline VALIDATION")
+            print("Final full-pipeline VALIDATION (supplementary; after TEST)")
             test(args, model, train_list, valid_list, num_rels, num_nodes, use_cuda,
                  all_ans_list_valid, all_ans_list_r_valid, model_state_file, static_graph,
                  "test", last_history, last_output, static_graph_diffu, model_diffpre)

@@ -1,4 +1,4 @@
-"""Small CPU checks for shared fixes, independent of the QCDR algorithm."""
+"""Small CPU checks for shape and cache compatibility fixes."""
 import pickle
 from pathlib import Path
 import tempfile

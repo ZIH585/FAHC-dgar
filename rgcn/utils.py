@@ -9,7 +9,6 @@ import json
 import os
 import pickle
 from pathlib import Path
-from src.runtime import cpu_copy
 from collections import defaultdict
 # from copy import deepcopy
 
@@ -674,11 +673,10 @@ class EarlyStopping:
         self.early_stop = False
         self.val_score_max = float('-inf')  # 初始化为负无穷，表示得分越高越好
 
-    def __call__(self, val_score, model, optimizer=None):
+    def __call__(self, val_score, model):
         val_score = float(val_score)
         if not np.isfinite(val_score):
             raise ValueError("nonfinite validation score")
-        self._optimizer = optimizer
         # 监控验证集指标（得分越高越好）
         if self.best_score is None:
             self.best_score = val_score
@@ -700,5 +698,4 @@ class EarlyStopping:
         if self.verbose:
             self.trace_func(f"Validation score increased ({self.val_score_max:.6f} --> {val_score:.6f}).  Saving model ...")
         torch.save(model.state_dict(), self.path)
-        self.optimizer_state = cpu_copy(self._optimizer.state_dict()) if self._optimizer else None
         self.val_score_max = val_score
