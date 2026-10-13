@@ -9,7 +9,7 @@ import numpy as np
 from rgcn.layers import UnionRGCNLayer, RGCNBlockLayer
 from src.model import BaseRGCN
 from src.decoder import ConvTransE, ConvTransR
-from src.qcdr import effective_candidate_alpha
+from src.qcdr import effective_candidate_alpha, validate_replay_entity_weight
 from diffusion.difffu_21 import MultiHeadedAttention
 from rgcn.reservoir_sampler import *
 from rgcn.CorruptTriplesGlobal import *
@@ -92,6 +92,8 @@ class RecurrentRGCN(nn.Module):
             getattr(args, "qcdr_mode", "original"),
             getattr(args, "qcdr_candidate_alpha", 1.0),
             getattr(args, "qcdr_target", "entity"))
+        self.qcdr_replay_entity_weight = validate_replay_entity_weight(
+            getattr(args, "qcdr_replay_entity_weight", 1.0))
         # self.initial_h=initial_h
 
         self.w1 = torch.nn.Parameter(torch.Tensor(
@@ -308,6 +310,10 @@ class RecurrentRGCN(nn.Module):
                     e_embedding, r_embedding, reply,
                     candidate_grad_scale=self.qcdr_candidate_alpha).view(-1, self.num_ents)
             loss = self.loss_e(scores_ob, reply[:, 2])
+            # This helper is used by BOTH entity replay CE terms in get_loss.
+            # Weight=1 bypasses multiplication to retain the Original path.
+            if self.qcdr_replay_entity_weight != 1.0:
+                loss = self.qcdr_replay_entity_weight * loss
         elif mode == 'r':
             score_rel = self.rdecoder.forward(
                 e_embedding, r_embedding, reply, mode="train").view(-1, 2 * self.num_rels)

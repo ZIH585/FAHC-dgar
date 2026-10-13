@@ -2,7 +2,7 @@
 import argparse
 import math
 from pathlib import Path
-from src.qcdr import effective_candidate_alpha
+from src.qcdr import effective_candidate_alpha, validate_replay_entity_weight
 
 
 def parse_bool(value):
@@ -214,11 +214,14 @@ def build_arg_parser():
                         help="Candidate gradient multiplier in candidate-scaled mode, in [0,1]; stopgrad uses 0")
     parser.add_argument("--qcdr-target", choices=("entity",), default="entity",
                         help="Only entity candidates are supported; relation prediction stays Original")
+    parser.add_argument("--qcdr-replay-entity-weight", type=float, default=1.0,
+                        help="Multiply both historical entity CE terms by this [0,1] weight; current/relation CE unchanged")
     return parser
 
 
 def validate_args(args):
     effective_candidate_alpha(args.qcdr_mode, args.qcdr_candidate_alpha, args.qcdr_target)
+    validate_replay_entity_weight(args.qcdr_replay_entity_weight)
     for name in ("n_epochs", "regcn_epochs", "diffu_epochs", "train_history_len", "test_history_len", "n_hidden", "hidden_size", "attn_heads", "diffusion_steps"):
         if getattr(args, name) < 1:
             raise ValueError(f"{name} must be positive")

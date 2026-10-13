@@ -17,6 +17,13 @@ def effective_candidate_alpha(mode="original", alpha=1.0, target="entity"):
     return float(alpha)
 
 
+def validate_replay_entity_weight(weight):
+    """Multiplier of BOTH historical entity CE terms, for the control ablation."""
+    if not math.isfinite(weight) or not 0.0 <= weight <= 1.0:
+        raise ValueError("qcdr-replay-entity-weight must be finite and in [0, 1]")
+    return float(weight)
+
+
 def decouple_candidate_gradient(candidate_repr, alpha):
     """Keep finite forward values, dtype/device and scale only this branch.
 

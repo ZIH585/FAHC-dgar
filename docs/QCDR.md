@@ -199,6 +199,7 @@ QCDR 不读取标签来生成新分数或做选择，不增加任何未来统计
 | --qcdr-mode | original | original / candidate-stopgrad / candidate-scaled |
 | --qcdr-candidate-alpha | 1.0 | finite 且在 [0,1]；scaled 使用指定值 |
 | --qcdr-target | entity | 第一版仅支持 entity；relation/both 明确拒绝 |
+| --qcdr-replay-entity-weight | 1.0 | 后续对照开关：同时缩放两项历史实体 CE，见 QCDR_REPLAY_CONTROL.md |
 
 | 模式/系数 | historical entity candidate 梯度 | current / replay query |
 |---|---:|---|
@@ -224,12 +225,12 @@ stopgrad 为 detach view；scaled 增加 O(Nd) 的临时张量/逐元素运算�
 
 | 文件 | 改动 |
 |---|---|
-| src/qcdr.py（新增） | 35 行无状态参数解析/候选梯度 routing |
+| src/qcdr.py（新增） | 无状态参数解析/候选梯度 routing，后续加入实体 replay 权重校验 |
 | src/decoder.py | ConvTransE 接收默认 1 的系数，最后 matmul 前应用 |
 | src/rrgcn.py | 保存普通 Python 系数；只在历史实体 CE 传入 |
 | src/cli.py | 三个 QCDR 参数及有效性校验 |
 | src/main.py | 导入解析函数，启动时打印三行；QCDR 不改训练循环 |
-| tests/test_qcdr.py（新增） | 15 项 synthetic CPU 梯度、集成、兼容、resume 测试 |
+| tests/test_qcdr.py（新增） | 初版 15 项 synthetic CPU 测试；后续加 2 项实体 replay 权重对照测试 |
 | tests/test_baseline_fixes.py（新增于公共修复提交） | 2 项缓存与 singleton diffusion 测试 |
 | src/runtime.py（公共修复提交） | 验证既有 HCP 与阶段 train facts 一致 |
 | diffusion/model_21.py（公共修复提交） | singleton CE target shape 修复 |
@@ -303,3 +304,9 @@ DGL 2.4.0+cu121。所有测试显式隐藏 CUDA，使用 CPU synthetic tensors/g
 如果只是缩小所有 replay 梯度也能同样改善，则研究贡献可能只是有效 replay 强度
 变化，未来需要等计算量的整体 replay 权重对照来区分；**本次不叠加这个机制**。
 五组第一阶段命令与指标口径见 [QCDR_EXPERIMENTS.md](QCDR_EXPERIMENTS.md)。
+
+2026-10-13 已实现整体实体 replay 缩放对照；默认 1 绕过乘法，保持初版行为。
+当前全部 19 项 CPU 测试通过，新增项确认两项 replay CE 都缩放、query/candidate
+都按权重缩放、current/relation/static 保持原路径。固定 seed2 的完整三组命令见
+[QCDR_REPLAY_CONTROL.md](QCDR_REPLAY_CONTROL.md)。新源码和参数不与旧 latest.pt
+混用 resume；新对照使用新 run-dir。没有执行真实数据训练。

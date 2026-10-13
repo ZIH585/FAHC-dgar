@@ -244,6 +244,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     print(f"QCDR mode: {args.qcdr_mode}")
     print(f"QCDR candidate alpha: {effective_candidate_alpha(args.qcdr_mode, args.qcdr_candidate_alpha, args.qcdr_target)}")
     print(f"QCDR target: {args.qcdr_target}")
+    print(f"QCDR entity replay weight: {args.qcdr_replay_entity_weight}")
     random.seed(args.seed)
     np.random.seed(args.seed % (2**32))
     torch.default_generator.manual_seed(args.seed)

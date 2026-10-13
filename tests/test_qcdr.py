@@ -39,12 +39,13 @@ def reference_module(path):
     return module
 
 
-def args_for(mode='original', alpha=1.0):
+def args_for(mode='original', alpha=1.0, replay_weight=1.0):
     return validate_args(build_arg_parser().parse_args([
         '--gpu', '-1', '--n-hidden', '8', '--hidden_size', '8',
         '--n-bases', '2', '--n-basis', '2', '--add-static-graph', 'false',
         '--diffusion_steps', '2', '--qcdr-mode', mode,
-        '--qcdr-candidate-alpha', str(alpha)]))
+        '--qcdr-candidate-alpha', str(alpha),
+        '--qcdr-replay-entity-weight', str(replay_weight)]))
 
 
 def make_model(args, cls=RecurrentRGCN, static=False):
@@ -204,6 +205,67 @@ class RoutingTests(unittest.TestCase):
 
 
 class ModelTests(unittest.TestCase):
+    def test_replay_weight_scales_both_entity_terms_only(self):
+        results = {}
+        for weight in (0., .5, 1.):
+            torch.default_generator.manual_seed(71)
+            args = args_for(replay_weight=weight)
+            args.mu = .3
+            model = make_model(args, static=True).eval()
+            calls = []
+            original = model.decoder_ob.forward
+            def score(entities, relations, triples, *a, **kw):
+                scores = original(entities, relations, triples, *a, **kw)
+                calls.append((scores, triples))
+                return scores
+            with mock.patch.object(model.decoder_ob, 'forward', side_effect=score):
+                total, losses = total_loss(model, static=True)
+            self.assertEqual([len(t) for _, t in calls], [4, 2, 4])
+            current = F.cross_entropy(calls[0][0], calls[0][1][:, 2])
+            replay = (F.cross_entropy(calls[1][0], calls[1][1][:, 2])
+                      + args.mu * F.cross_entropy(calls[2][0], calls[2][1][:, 2]))
+            torch.testing.assert_close(losses[0], (current + weight * replay).reshape(1))
+            other_grads = torch.autograd.grad(losses[1] + losses[2], tuple(model.parameters()),
+                                             retain_graph=True, allow_unused=True)
+            total.backward()
+            results[weight] = (gradients(model), other_grads, [v.detach() for v in losses[:4]])
+        for weight, (grads, other_grads, losses) in results.items():
+            for name, g1 in results[1.][0].items():
+                g0, gw = results[0.][0][name], grads[name]
+                if g1 is None:
+                    self.assertIsNone(gw)
+                else:
+                    torch.testing.assert_close(gw, g0 + weight * (g1 - g0), rtol=3e-5, atol=3e-7)
+            for gw, g1 in zip(other_grads, results[1.][1]):
+                if g1 is not None:
+                    torch.testing.assert_close(gw, g1, rtol=0, atol=0)
+            for i in (1, 2, 3):
+                torch.testing.assert_close(losses[i], results[1.][2][i], rtol=0, atol=0)
+
+    def test_replay_weight_scales_query_and_candidate_gradients(self):
+        outputs = {}
+        torch.default_generator.manual_seed(73)
+        q0, r0, bank0 = torch.randn(8, 8), torch.randn(4, 8), torch.randn(8, 8)
+        triples = torch.tensor([[0, 0, 1], [2, 1, 3]])
+        for weight in (.5, 1.):
+            torch.default_generator.manual_seed(75)
+            model = make_model(args_for(replay_weight=weight)).eval()
+            query, relations, bank = [x.clone().requires_grad_() for x in (q0, r0, bank0)]
+            original = model.decoder_ob.forward
+            scores = []
+            def score(e, r, triples, **kw):
+                result = original(e, r, triples, partial_embeding=bank, **kw)
+                scores.append(result.detach())
+                return result
+            with mock.patch.object(model.decoder_ob, 'forward', side_effect=score):
+                loss = model.loss_of_reply(query, relations, triples, mode='e')
+            loss.backward()
+            outputs[weight] = (scores[0], loss.detach(), query.grad, relations.grad, bank.grad)
+        self.assertTrue(torch.equal(outputs[.5][0], outputs[1.][0]))
+        for i in (1, 2, 3, 4):
+            self.assertGreater(float(outputs[1.][i].norm()), 0.)
+            torch.testing.assert_close(outputs[.5][i], .5 * outputs[1.][i], rtol=1e-6, atol=1e-7)
+
     def test_original_and_scaled_one_match_independent_baseline_through_adam(self):
         old_decoder, old_rgcn = reference_module('src/decoder.py'), reference_module('src/rrgcn.py')
         old_rgcn.ConvTransE, old_rgcn.ConvTransR = old_decoder.ConvTransE, old_decoder.ConvTransR
@@ -339,6 +401,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual({k: v for k, v in vars(current).items() if not k.startswith('qcdr_')}, vars(old))
         self.assertEqual((current.qcdr_mode, current.qcdr_candidate_alpha, current.qcdr_target),
                          ('original', 1., 'entity'))
+        self.assertEqual(current.qcdr_replay_entity_weight, 1.)
         self.assertEqual(effective_candidate_alpha('original', .25), 1.)
         self.assertEqual(effective_candidate_alpha('candidate-stopgrad', 1.), 0.)
         for alpha in (0., .25, .5, 1.):
@@ -346,6 +409,8 @@ class RuntimeTests(unittest.TestCase):
         for alpha in (-1., 1.1, float('nan'), float('inf')):
             with self.assertRaises(ValueError):
                 args_for('candidate-scaled', alpha)
+            with self.assertRaises(ValueError):
+                args_for(replay_weight=alpha)
         with contextlib.redirect_stderr(io.StringIO()):
             for tokens in (['--qcdr-mode', 'unknown'], ['--qcdr-target', 'both'], ['--qcdr-target', 'relation']):
                 with self.assertRaises(SystemExit):
