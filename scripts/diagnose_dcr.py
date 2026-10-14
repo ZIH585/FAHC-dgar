@@ -63,23 +63,31 @@ def load_original(options):
     run_dir = options.run_dir.resolve()
     config = json.loads((run_dir / 'config.json').read_text())
     s = config['settings']
+    # Optional explicit mean checkpoint support is used only by the independent
+    # scale diagnostic. The original endpoint screen retains its default guard.
+    checkpoint_mode = getattr(options, 'checkpoint_mode', 'original')
+    if checkpoint_mode not in ('original', 'mean'):
+        raise ValueError('Only audited Original/mean checkpoints are supported')
+    expected_protocol = PROTOCOL if checkpoint_mode == 'original' else dcr.PROTOCOL
     local_hash = fingerprint([p for folder in ('src', 'diffusion', 'rgcn')
                               for p in (ROOT / folder).glob('*.py')], ROOT)
     sources = {'6eda8c0c9b3426cca861087a715309c8a7c5c1efa33d6d5ec5b1bdaf6c681538',
                'c22dc00022ff00ef8ebf9486d32f839ef9f60b5e0c59d04b79413401ba96b3d5', local_hash}
-    if (config['protocol'] != PROTOCOL or config['upstream_commit'] != UPSTREAM_COMMIT
+    if (config['protocol'] != expected_protocol or config['upstream_commit'] != UPSTREAM_COMMIT
             or config['source_sha256'] not in sources
             or s.get('grb_mode', 'original') != 'original'
-            or s.get('dcr_mode', 'original') != 'original'
+            or s.get('dcr_mode', 'original') != checkpoint_mode
             or any(k.startswith(('fahc', 'ecri', 'qcdr', 'bcr')) for k in s)
             or not s['diffuc'] or s['delete_feature_reply'] or s['delete_his_prompt']
             or s['delete_score'] or s['vl']):
-        raise ValueError('Use a completed, restored Original DGAR checkpoint')
+        raise ValueError('Use a completed audited checkpoint matching checkpoint_mode')
     args = build_arg_parser().parse_args([])
     for k, v in s.items():
         if hasattr(args, k):
             setattr(args, k, v)
     args.data_root, args.gpu = options.data_root.resolve(), options.gpu
+    if checkpoint_mode == 'mean':
+        args.run_dir = run_dir  # Required by CLI validation; loader never writes.
     args = validate_args(args)
     cuda = options.gpu >= 0
     if cuda and not torch.cuda.is_available():

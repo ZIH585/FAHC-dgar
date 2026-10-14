@@ -1,5 +1,8 @@
 # DCR-DGAR：去噪终点上下文回放
 
+2026-10-14 的完整实验支持保留 mean，当前 guided-x0 没有超过 Original。
+下面保留初始设计记录；下一步见 [噪声/尺度诊断与 ICEWS18 对照](DCR_NEXT_EXPERIMENTS.md)。
+
 ## 基线与范围
 
 分支 `codex/dcr` 从 `codex/original-baseline@23dd43dd914a783731c7f39e3fd66491d2aba429`

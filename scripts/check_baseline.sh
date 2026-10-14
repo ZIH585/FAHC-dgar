@@ -10,6 +10,7 @@ export PYTHONDONTWRITEBYTECODE=1
 "$DGAR_INTERPRETER" -B -W ignore::FutureWarning -W ignore::ResourceWarning \
   -m unittest discover -s tests -v
 "$DGAR_INTERPRETER" -B src/main.py --help > /dev/null
+"$DGAR_INTERPRETER" -B scripts/diagnose_dcr_scale.py --help > /dev/null
 "$DGAR_INTERPRETER" -B - <<'PY'
 from pathlib import Path
 import py_compile

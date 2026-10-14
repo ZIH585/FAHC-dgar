@@ -405,6 +405,74 @@ class DCRTests(unittest.TestCase):
             self.assertTrue((options.output/'queries.csv').is_file())
             for p, contents in before.items():
                 self.assertEqual(p.read_bytes(), contents)
+            # New diagnostic runs on both configurations with the same tiny
+            # synthetic weights. This checks loading/wiring, not performance.
+            from scripts.diagnose_dcr_scale import parser as scale_parser, run as scale_run
+            import copy
+            for mode in ('original', 'mean'):
+                input_run = checkpoint
+                if mode == 'mean':
+                    input_run = root / 'mean-checkpoint'
+                    input_run.mkdir()
+                    mean_config = copy.deepcopy(config)
+                    mean_config['protocol'] = dcr.PROTOCOL
+                    mean_config['settings']['dcr_mode'] = 'mean'
+                    (input_run / 'config.json').write_text(json.dumps(mean_config))
+                    torch.save(model.state_dict(), input_run / 'model.pt')
+                    torch.save(gen.state_dict(), input_run / 'diffusion.pt')
+                    torch.save(dict(version=2,provenance=mean_config,completed_stage=2,
+                        model=model.state_dict(),diffusion=gen.state_dict()),input_run/'latest.pt')
+                initial={p:p.read_bytes() for p in input_run.iterdir()}
+                options=scale_parser().parse_args(['--gpu','-1','--checkpoint-mode',mode,
+                    '--run-dir',str(input_run),'--output',str(root/f'scale-{mode}'),
+                    '--data-root',str(root),'--stages','2'])
+                with contextlib.redirect_stdout(io.StringIO()):
+                    scale_run(options)
+                result=json.loads((options.output/'summary.json').read_text())
+                self.assertEqual(result['generation'][0]['denoiser_calls'],1)
+                self.assertEqual(len(result['overall']),4)
+                self.assertEqual(result['overall']['original']['queries'],2)
+                for p,contents in initial.items():self.assertEqual(p.read_bytes(),contents)
+
+    def test_scale_arms_match_per_fact_norms_and_keep_head_tokens(self):
+        from scripts.diagnose_dcr_scale import scale_arms
+        original=torch.randn(3,3,8,requires_grad=True)
+        mean=torch.randn(3,8,requires_grad=True)*.01
+        before=original.detach().clone()
+        variants,stats=scale_arms(original,mean)
+        torch.testing.assert_close(variants['scaled-original'][:,-1].norm(dim=-1),mean.norm(dim=-1))
+        torch.testing.assert_close(variants['scaled-mean'][:,-1].norm(dim=-1),original[:,-1].norm(dim=-1))
+        for value in variants.values():
+            torch.testing.assert_close(value[:,:2],original[:,:2],rtol=0,atol=0)
+            self.assertIsNone(value.grad_fn)
+        torch.testing.assert_close(original.detach(),before,rtol=0,atol=0)
+        self.assertEqual(stats['zero_mean_tails'],0)
+        _,empty=scale_arms(torch.empty(0,3,8),torch.empty(0,8))
+        self.assertEqual(empty['facts'],0)
+        variants,zero=scale_arms(original[:1],torch.zeros(1,8))
+        self.assertTrue(torch.isfinite(variants['scaled-mean']).all())
+        self.assertEqual(zero['zero_mean_tails'],1)
+        self.assertIsNone(zero['max_norm_mismatch']['scaled-mean'])
+
+    def test_paired_scale_capture_preserves_sampler_output_rng_and_restores_hooks(self):
+        from scripts.diagnose_dcr_scale import paired_tails
+        args=self.args();model,gen=self.modules(args)
+        model.requires_grad_(False).eval();gen.requires_grad_(False).train()
+        tags=torch.tensor([[0,0,1],[2,1,3]])
+        state=rng_state('cpu')
+        expected=self.generate(gen,model,args,tags);expected_rng=rng_state('cpu')
+        restore_rng(state,'cpu')
+        args.dcr_mode='mean'
+        calls=[]
+        handle=gen.diffu.xstart_model.register_forward_hook(lambda *a:calls.append(1))
+        try:variants,stats=paired_tails(gen,model,args,tags,self.graph(),None,2,False)
+        finally:handle.remove()
+        torch.testing.assert_close(variants['original'],expected,rtol=0,atol=0)
+        self.assertTrue(torch.equal(torch.get_rng_state(),expected_rng['torch']))
+        self.assertEqual(len(calls),1)
+        self.assertEqual(args.dcr_mode,'mean')
+        self.assertNotIn('p_mean_variance',gen.diffu.__dict__)
+        self.assertIsNone(model.h.grad_fn)
 
 
 if __name__ == '__main__':
