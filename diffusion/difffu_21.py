@@ -5,6 +5,7 @@ import numpy as np
 import math
 import torch
 import torch.nn.functional as F
+from diffusion import dcr
 
 
 def modulate(x, shift, scale):
@@ -631,6 +632,9 @@ class DiffuRec(nn.Module):
 
     #     return noise_x_t
     def reverse_p_sample(self, model, tag, item_rep, noise_x_t, c, sr_embs, mask_seq, history_glist, triples, static_graph, args, use_cuda, mask=None, query_sub3=None):
+        if dcr.active(args):
+            return dcr.sample(self, model, tag, item_rep, noise_x_t, c, sr_embs,
+                mask_seq, history_glist, triples, static_graph, args, use_cuda, mask, query_sub3)
         # 改成ddpm，设置分数阈值，在训练过程中设置新旧表示的loss
         device = next(self.xstart_model.parameters()).device
         indices = list(range(0, self.num_timesteps))[::-1]

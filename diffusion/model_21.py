@@ -9,6 +9,7 @@ import torch as th
 import random
 import pickle
 from pathlib import Path
+from diffusion import dcr
 # from decoder import ConvTransE
 
 
@@ -310,6 +311,8 @@ class Att_Diffuse_model(nn.Module):
 
             rep_diffu = self.reverse(model, tag, inter_embeddings_drop.detach().requires_grad_(True), inter_embeddings_drop[:, -1, :].detach(
             ).requires_grad_(True), initial_h.detach().requires_grad_(True), c, mask_seq, history_glist, triples, static_graph, use_cuda, args, [])
+            if dcr.active(args):
+                dcr.record(args, self.diffu, ct, model, len(tag))
 
             rep_item, t, object_protype_gt = None, None, None
 

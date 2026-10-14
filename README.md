@@ -1,10 +1,13 @@
-# DGAR Original baseline
+# DGAR + DCR
 
-Branch: `codex/original-baseline`. Protocol: `official-dgar-v1`.
+Branch: `codex/dcr`, based on `codex/original-baseline@23dd43d`.
+Default OFF protocol: `official-dgar-v1`; enabled replay: `dcr-endpoint-v1`.
 Pinned author source: `zyzhang11/DGAR@c5bbc87467bb22d266b664d30eefb8184c1d3104`.
 
 Read [the baseline audit](docs/BASELINE.md) before running experiments or branching
-a new method. This branch contains no experimental method or KD/selector flags.
+a new method. See [DCR implementation and experiment commands](docs/DCR.md).
+`--dcr` uses the predicted denoised endpoint with recomputed historical guidance;
+omit it for Original. `mean` and `x0` provide noise-removal and endpoint controls.
 
 ```bash
 # CPU checks only; no dataset or GPU training.

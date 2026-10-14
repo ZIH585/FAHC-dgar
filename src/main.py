@@ -25,6 +25,7 @@ import torch.nn.modules.rnn
 from collections import defaultdict
 from rgcn.knowledge_graph import _read_triplets_as_list
 from diffusion.model_21 import create_model_diffu, Att_Diffuse_model
+from diffusion.dcr import Recorder
 from torch.optim import *
 
 import copy
@@ -188,6 +189,8 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
     mrr_raw_r = utils.stat_ranks(ranks_raw_r, "raw_rel")
     mrr_filter_r = utils.stat_ranks(ranks_filter_r, "filter_rel")
     
+    if args.dcr_mode != 'original':
+        args._dcr_recorder.flush()
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r, last_history, last_output,MRRs,H1,H3,H10,mrr_sum_avg,hit1_sum_avg,hit3_sum_avg,hit10_sum_avg
 
 @torch.no_grad()
@@ -243,7 +246,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     if n_bases is not None:
         args.n_bases = n_bases
     validate_args(args)
-    print(f"Baseline protocol: {PROTOCOL}")
+    print(f"Baseline protocol: {getattr(args, '_protocol', PROTOCOL)}")
     # Upstream declares --seed but never applies it. No flag preserves that
     # initialization policy; an explicit seed is a documented reproducibility opt-in.
     if args.seed is not None:
@@ -273,6 +276,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     data_history = args.data_root / args.dataset / "history_snap_v2"
     validate_history_cache(train_list, data.num_rels, data_history)
     prepare_run(args)
+    if args.dcr_mode != 'original':
+        args._dcr_recorder = Recorder(args.run_dir / 'dcr.jsonl')
     fitlog.set_log_dir(str(args.run_dir / "fitlog" if args.run_dir else Path(__file__).resolve().parents[1] / "logs"))
     fitlog.add_hyper({key: str(value) if isinstance(value, Path) else value
                       for key, value in vars(args).items() if not key.startswith('_')})
@@ -771,6 +776,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     model_diffpre.load_state_dict(checkpoint_diffu)
                 # The next stage starts from these BEST feature weights and the
                 # LAST optimizer states, exactly as in the uninterrupted loop.
+                if args.dcr_mode != 'original':
+                    args._dcr_recorder.flush()
                 save_training_state(args, train_sample_num, model_repre, model_diffpre,
                                     optimizer, optimizer_diffu, run_device, auxiliary=None)
 
