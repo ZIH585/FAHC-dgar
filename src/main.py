@@ -15,6 +15,7 @@ import itertools
 import argparse
 from pathlib import Path
 from src.cli import build_arg_parser, validate_args
+from src.raha_diagnostics import EvaluationRecorder, record_training_stage
 from src.runtime import (PROTOCOL, prepare_run, restore_evaluation_rng,
                          save_training_state, restore_training_state, validate_history_cache)
 from rgcn import utils
@@ -43,7 +44,7 @@ def getReverseSample(test_triplets, num_rels):
 def test(args, model, history_list, test_list, num_rels, num_nodes,
          use_cuda, all_ans_list, all_ans_r_list, model_name,
          static_graph, mode, last_history, last_output,
-         static_graph_diffu, model_diffpre):
+         static_graph_diffu, model_diffpre, phase="test"):
     """
     :param model: model used to test
     :param history_list:    all input history snap shot list, not include output label train list or valid list
@@ -82,6 +83,8 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
 
     model.eval()
     device = next(model.parameters()).device
+    recorder = (EvaluationRecorder(args, phase, history_list, num_rels)
+                if getattr(args, "raha_diagnostics", False) else None)
     # do not have inverse relation in test input
     his_list = [snap for snap in history_list]
 
@@ -140,6 +143,8 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
             test_triples, final_r_score, all_ans_r_list[time_idx], eval_bz=1000, rel_predict=1)
         mrr_filter_snap, mrr_snap, rank_raw, rank_filter = utils.get_total_rank(
             test_triples, final_score, all_ans_list[time_idx], eval_bz=1000, rel_predict=0)
+        if recorder is not None:
+            recorder.record(time_idx, test_triples, rank_raw, rank_filter, model, diffu_rep)
         
         mrr,hits=utils.stat_ranks_record(rank_filter,"predict_filter_ent")
         # One score per time slice, with inverse queries included by predict().
@@ -187,6 +192,8 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
     mrr_filter = utils.stat_ranks(ranks_filter, "filter_ent")
     mrr_raw_r = utils.stat_ranks(ranks_raw_r, "raw_rel")
     mrr_filter_r = utils.stat_ranks(ranks_filter_r, "filter_rel")
+    if recorder is not None:
+        recorder.finish(len(test_list) - 1)
     
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r, last_history, last_output,MRRs,H1,H3,H10,mrr_sum_avg,hit1_sum_avg,hit3_sum_avg,hit10_sum_avg
 
@@ -517,7 +524,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
             print("Final full-pipeline VALIDATION (supplementary; after TEST)")
             test(args, model, train_list, valid_list, num_rels, num_nodes, use_cuda,
                  all_ans_list_valid, all_ans_list_r_valid, model_state_file, static_graph,
-                 "test", result[4], result[5], static_graph_diffu, model_diffpre)
+                 "test", result[4], result[5], static_graph_diffu, model_diffpre, phase="validation")
         fitlog.finish()
     else:
         print("----------------------------------------start training----------------------------------------\n")
@@ -773,6 +780,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 # LAST optimizer states, exactly as in the uninterrupted loop.
                 save_training_state(args, train_sample_num, model_repre, model_diffpre,
                                     optimizer, optimizer_diffu, run_device, auxiliary=None)
+                if getattr(args, "raha_diagnostics", False):
+                    record_training_stage(args, train_sample_num, model_repre, diffu_rep)
 
         print("Final full-pipeline TEST")
         mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r, last_history, last_output,mrrs,h1s,h3s,h10s,m_,h1,h3,h10 = test(args,
@@ -795,7 +804,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
             print("Final full-pipeline VALIDATION (supplementary; after TEST)")
             test(args, model, train_list, valid_list, num_rels, num_nodes, use_cuda,
                  all_ans_list_valid, all_ans_list_r_valid, model_state_file, static_graph,
-                 "test", last_history, last_output, static_graph_diffu, model_diffpre)
+                 "test", last_history, last_output, static_graph_diffu, model_diffpre, phase="validation")
         fitlog.finish()
         # pca(entity_old,entity_new,args.dataset,mrr_old,mrr_new)
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r

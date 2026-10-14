@@ -9,6 +9,7 @@ import numpy as np
 from rgcn.layers import UnionRGCNLayer, RGCNBlockLayer
 from src.model import BaseRGCN
 from src.decoder import ConvTransE, ConvTransR
+from src.raha import HistoricalAdapter
 from diffusion.difffu_21 import MultiHeadedAttention
 from rgcn.reservoir_sampler import *
 from rgcn.CorruptTriplesGlobal import *
@@ -187,9 +188,18 @@ class RecurrentRGCN(nn.Module):
         else:
             raise NotImplementedError
 
+        # Added after every Original parameter is initialized. The OFF model
+        # has exactly the Original state_dict and consumes no additional RNG.
+        raha_mode = getattr(args, "raha_mode", "original")
+        self.raha = (HistoricalAdapter(self.h_dim, getattr(args, "raha_rank", 8), raha_mode)
+                     if raha_mode != "original" else None)
+
     def select_entity(self, tag, embeding, use_cuda):
         entity_all = torch.cat([tag[:, 0], tag[:, 2]])
         s_o_embeding = torch.cat([embeding[:, 0, :], embeding[:, 2, :]], dim=0)
+        if self.raha is not None:
+            head, tail = self.raha(embeding[:, 0, :], embeding[:, 2, :])
+            s_o_embeding = torch.cat([head, tail], dim=0)
         # s_o_embeding = embeding[:, 0, :]
         embeding_dict = dict()
         # for i, ent in enumerate(entity_all):

@@ -206,6 +206,13 @@ def build_arg_parser():
     parser.add_argument("--run-dir", type=Path, default=None, help="Separate config, checkpoints and outputs for this run")
     parser.add_argument("--resume", type=Path, default=None, help="Resume a completed chronological stage from latest.pt")
     parser.add_argument("--final-validation", action="store_true", help="Also report final full-pipeline validation")
+    parser.add_argument("--raha-mode", choices=("original", "shared", "role"), default="original",
+                        help="Original aggregation, shared residual adapter, or independent head/tail adapters")
+    parser.add_argument("--raha", dest="raha_mode", action="store_const", const="role",
+                        default=argparse.SUPPRESS, help="Enable RAHA role adapters (alias for --raha-mode role)")
+    parser.add_argument("--raha-rank", type=int, default=8, help="Residual adapter bottleneck width")
+    parser.add_argument("--raha-diagnostics", action="store_true",
+                        help="Write passive stage/replay statistics and final query ranks; requires --run-dir")
     return parser
 
 
@@ -227,6 +234,16 @@ def validate_args(args):
         raise ValueError("start_reply must be 0: every chronological stage needs a diffusion checkpoint")
     if args.resume and (args.test or args.n_epochs != 1 or args.run_dir is None):
         raise ValueError("resume requires --run-dir, one chronological pass, and no --test")
+    if args.raha_mode != "original":
+        if not 1 <= args.raha_rank <= args.n_hidden:
+            raise ValueError("raha rank must be between 1 and n_hidden")
+        if args.run_dir is None or args.n_epochs != 1 or args.grid_search:
+            raise ValueError("RAHA requires --run-dir, one chronological pass, and no grid search")
+        if (args.diffuc != "add" or not args.diffu or args.delete_feature_reply
+                or args.reply_batch < 1):
+            raise ValueError("RAHA requires Original add fusion and enabled feature replay")
+    if args.raha_diagnostics and (args.run_dir is None or args.n_epochs != 1 or args.grid_search):
+        raise ValueError("raha diagnostics requires --run-dir, one chronological pass, and no grid search")
     if args.run_dir is not None:
         args.run_dir = args.run_dir.resolve()
     args.data_root = args.data_root.resolve()
