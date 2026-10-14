@@ -202,6 +202,18 @@ def build_arg_parser():
     parser.add_argument("--accumulation_steps", type=int,
                         default=2, help="norm to clip gradient to")
 
+    parser.add_argument('--rter', dest='rter_mode', action='store_const', const='transition', default='original',
+                        help='Enable cross-relation evidence at final entity scoring only')
+    parser.add_argument('--rter-mode', choices=('original', 'transition', 'repeat', 'popularity', 'shuffled'),
+                        default='original', help='Original OFF or matched evidence controls')
+    parser.add_argument('--rter-beta', type=float, default=.1, help='Nonnegative score residual weight; 0 is identity')
+    parser.add_argument('--rter-horizon', type=float, default=30., help='Snapshot e-folding time, exp(-gap/horizon)')
+    parser.add_argument('--rter-smoothing', type=float, default=20., help='Transition prior pseudocount')
+    parser.add_argument('--rter-window', type=int, default=30, help='Maximum gap between observed pair events')
+    parser.add_argument('--rter-clip', type=float, default=3., help='Maximum unit log-evidence per candidate')
+    parser.add_argument('--rter-channel', choices=('cross', 'all'), default='cross', help='Cross excludes identity transitions')
+    parser.add_argument('--rter-shuffle-seed', type=int, default=1, help='Local control permutation; does not alter training RNG')
+
     parser.add_argument("--data-root", type=Path, default=Path(__file__).resolve().parents[1] / "data")
     parser.add_argument("--run-dir", type=Path, default=None, help="Separate config, checkpoints and outputs for this run")
     parser.add_argument("--resume", type=Path, default=None, help="Resume a completed chronological stage from latest.pt")
@@ -210,6 +222,15 @@ def build_arg_parser():
 
 
 def validate_args(args):
+    if not math.isfinite(args.rter_beta) or args.rter_beta < 0:
+        raise ValueError('rter-beta must be finite and nonnegative')
+    if any(not math.isfinite(x) or x <= 0 for x in
+           (args.rter_horizon, args.rter_smoothing, args.rter_clip)):
+        raise ValueError('RTER horizon, smoothing and clip must be positive and finite')
+    if args.rter_window < 1 or args.rter_shuffle_seed < 0:
+        raise ValueError('Invalid RTER window or shuffle seed')
+    if args.rter_mode != 'original' and (args.run_dir is None or args.grid_search or args.n_epochs != 1):
+        raise ValueError('RTER requires an isolated --run-dir, one chronological pass, and no grid search')
     for name in ("n_epochs", "regcn_epochs", "diffu_epochs", "train_history_len", "test_history_len", "n_hidden", "hidden_size", "attn_heads", "diffusion_steps"):
         if getattr(args, name) < 1:
             raise ValueError(f"{name} must be positive")

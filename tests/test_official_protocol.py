@@ -61,7 +61,7 @@ class Interrupted(Exception):
     pass
 
 
-def run_loop(path, directory, resume=False, interrupt_at=None):
+def run_loop(path, directory, resume=False, interrupt_at=None, rter_mode='original'):
     """Execute the actual main.py chronological branch with tiny models."""
     random.seed(91)
     np.random.seed(91)
@@ -71,6 +71,7 @@ def run_loop(path, directory, resume=False, interrupt_at=None):
         '--gpu', '-1', '--regcn_epochs', '3', '--diffu_epochs', '3',
         '--add-static-graph', 'false', '--run-dir', str(directory)]))
     args._provenance = {'protocol': PROTOCOL, 'synthetic': True}
+    args.rter_mode = rter_mode
     args.resume = directory / 'latest.pt' if resume else None
     directory.mkdir(exist_ok=True)
     train = [np.array([[t, 0, (t + 1) % 8]], dtype=np.int64) for t in range(4)]

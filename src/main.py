@@ -20,6 +20,7 @@ from src.runtime import (PROTOCOL, prepare_run, restore_evaluation_rng,
 from rgcn import utils
 from rgcn.utils import *
 from src.rrgcn import RecurrentRGCN
+from src import rter
 from src.hyperparameter_range import hp_range
 import torch.nn.modules.rnn
 from collections import defaultdict
@@ -43,7 +44,7 @@ def getReverseSample(test_triplets, num_rels):
 def test(args, model, history_list, test_list, num_rels, num_nodes,
          use_cuda, all_ans_list, all_ans_r_list, model_name,
          static_graph, mode, last_history, last_output,
-         static_graph_diffu, model_diffpre):
+         static_graph_diffu, model_diffpre, evidence_phase='TEST'):
     """
     :param model: model used to test
     :param history_list:    all input history snap shot list, not include output label train list or valid list
@@ -84,6 +85,9 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
     device = next(model.parameters()).device
     # do not have inverse relation in test input
     his_list = [snap for snap in history_list]
+    evidence_index = None
+    if getattr(args, 'rter_mode', 'original') != 'original' and args.rter_beta > 0:
+        evidence_index = rter.RelationEvidence.from_args(args, his_list, num_nodes, num_rels)
 
     last_history = last_history
     last_output = last_output
@@ -135,6 +139,13 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
             model_output_o=None
         test_triples, final_score, final_r_score = model.predict(
             history_glist, num_rels, static_graph, test_triples_input, diffu_rep,model_output_o, output_reply_triple, use_cuda, current_query_history_graph)
+        # Post-decoder evidence only. get_loss(), guidance and test_single()
+        # remain Original, including checkpoint selection and its RNG stream.
+        if evidence_index is not None:
+            evidence = evidence_index.advance(time_idx).evidence(
+                rter.known_queries(test_snap, num_rels), args.rter_mode)
+            final_score = evidence.apply(final_score, args.rter_beta)
+            rter.record(args.run_dir / 'rter.jsonl', evidence, args.rter_beta, evidence_phase)
 
         mrr_filter_snap_r, mrr_snap_r, rank_raw_r, rank_filter_r = utils.get_total_rank(
             test_triples, final_r_score, all_ans_r_list[time_idx], eval_bz=1000, rel_predict=1)
@@ -517,7 +528,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
             print("Final full-pipeline VALIDATION (supplementary; after TEST)")
             test(args, model, train_list, valid_list, num_rels, num_nodes, use_cuda,
                  all_ans_list_valid, all_ans_list_r_valid, model_state_file, static_graph,
-                 "test", result[4], result[5], static_graph_diffu, model_diffpre)
+                 "test", result[4], result[5], static_graph_diffu, model_diffpre, evidence_phase='VALIDATION')
         fitlog.finish()
     else:
         print("----------------------------------------start training----------------------------------------\n")
@@ -795,7 +806,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
             print("Final full-pipeline VALIDATION (supplementary; after TEST)")
             test(args, model, train_list, valid_list, num_rels, num_nodes, use_cuda,
                  all_ans_list_valid, all_ans_list_r_valid, model_state_file, static_graph,
-                 "test", last_history, last_output, static_graph_diffu, model_diffpre)
+                 "test", last_history, last_output, static_graph_diffu, model_diffpre, evidence_phase='VALIDATION')
         fitlog.finish()
         # pca(entity_old,entity_new,args.dataset,mrr_old,mrr_new)
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r

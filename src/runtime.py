@@ -91,7 +91,7 @@ def prepare_run(args):
     if args.add_static_graph:
         files.append(data / 'e-w-graph.txt')
     args._provenance = {
-        'protocol': PROTOCOL,
+        'protocol': 'rter-score-v1' if getattr(args, 'rter_mode', 'original') != 'original' and args.rter_beta > 0 else PROTOCOL,
         'upstream_commit': UPSTREAM_COMMIT,
         'settings': settings(args),
         'source_sha256': fingerprint([p for folder in ('src', 'diffusion', 'rgcn')

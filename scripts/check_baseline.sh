@@ -10,11 +10,13 @@ export PYTHONDONTWRITEBYTECODE=1
 "$DGAR_INTERPRETER" -B -W ignore::FutureWarning -W ignore::ResourceWarning \
   -m unittest discover -s tests -v
 "$DGAR_INTERPRETER" -B src/main.py --help > /dev/null
+"$DGAR_INTERPRETER" -B scripts/evaluate_rter.py --help > /dev/null
+bash -n scripts/run_rter_experiment.sh scripts/run_rter_evaluation.sh
 "$DGAR_INTERPRETER" -B - <<'PY'
 from pathlib import Path
 import py_compile
 import tempfile
-sources = [p for folder in ('src', 'diffusion', 'rgcn', 'tests')
+sources = [p for folder in ('src', 'diffusion', 'rgcn', 'tests', 'scripts')
            for p in Path(folder).glob('*.py')]
 with tempfile.TemporaryDirectory() as directory:
     for index, path in enumerate(sources):

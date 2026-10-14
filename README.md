@@ -1,10 +1,14 @@
-# DGAR Original baseline
+# DGAR + RTER
 
-Branch: `codex/original-baseline`. Protocol: `official-dgar-v1`.
+Branch: `codex/rter`, based on `codex/original-baseline@23dd43d`.
+Default OFF protocol: `official-dgar-v1`. Enabled final scoring: `rter-score-v1`.
 Pinned author source: `zyzhang11/DGAR@c5bbc87467bb22d266b664d30eefb8184c1d3104`.
 
 Read [the baseline audit](docs/BASELINE.md) before running experiments or branching
-a new method. This branch contains no experimental method or KD/selector flags.
+a new method. See [RTER implementation and commands](docs/RTER.md).
+RTER adds a causal relation-transition score residual after the Original decoder.
+The recommended experiment reuses a completed Original checkpoint and shares
+its logits across all evidence controls; no additional training is required.
 
 ```bash
 # CPU checks only; no dataset or GPU training.
