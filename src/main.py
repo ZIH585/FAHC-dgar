@@ -20,6 +20,7 @@ from src.runtime import (PROTOCOL, prepare_run, restore_evaluation_rng,
 from rgcn import utils
 from rgcn.utils import *
 from src.rrgcn import RecurrentRGCN
+from src import bcr
 from src.hyperparameter_range import hp_range
 import torch.nn.modules.rnn
 from collections import defaultdict
@@ -111,12 +112,13 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
         else:
             reply_time_index=random.sample(list(range(time_idx)), args.reply_batch)
                     
-        for i in reply_time_index:
-            with open(args.data_root / args.dataset / "history_snap_v2" / f"snap_{i}.pkl", "rb") as stream:
-                related_history = pickle.load(stream)
-            for element in test_snap:
-                if str(element[0]) in related_history.keys():
-                    current_query_history_triples.update(related_history[str(element[0])])
+        if args.bcr_mode == 'original':
+            for i in reply_time_index:
+                with open(args.data_root / args.dataset / "history_snap_v2" / f"snap_{i}.pkl", "rb") as stream:
+                    related_history = pickle.load(stream)
+                for element in test_snap:
+                    if str(element[0]) in related_history.keys():
+                        current_query_history_triples.update(related_history[str(element[0])])
         
         test_triples_input = torch.LongTensor(
             test_snap).cuda() if use_cuda else torch.LongTensor(test_snap)
@@ -125,7 +127,7 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
         sequence = None
         output_reply_triple = torch.as_tensor(list(current_query_history_triples),
             dtype=torch.long, device=device).reshape(-1, 3)
-        if args.diffuc and len(output_reply_triple)>0 and args.delete_feature_reply is False:
+        if args.bcr_mode == "original" and args.diffuc and len(output_reply_triple)>0 and args.delete_feature_reply is False:
             scores, diffu_rep, weights, t, _, ent_emb, noise, _, targets = model_diffpre(
                 sequence, output_reply_triple, args, False, use_cuda, static_graph=static_graph_diffu, ct=time_idx, model=model, history_glist=last_history, triples=last_output)
 
@@ -133,8 +135,16 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
         else:
             diffu_rep=None
             model_output_o=None
-        test_triples, final_score, final_r_score = model.predict(
-            history_glist, num_rels, static_graph, test_triples_input, diffu_rep,model_output_o, output_reply_triple, use_cuda, current_query_history_graph)
+        if args.bcr_mode != 'original':
+            replays = args._bcr.evaluation(time_idx, test_snap[:, 0].tolist(),
+                test_snap[:, 2].tolist(), model_diffpre, model, last_history,
+                last_output, static_graph_diffu, device, use_cuda, final=True,
+                times=reply_time_index, stop=time_idx, phase=mode)
+            test_triples, final_score, final_r_score = bcr.predict(model,
+                history_glist, num_rels, static_graph, test_triples_input, replays, use_cuda)
+        else:
+            test_triples, final_score, final_r_score = model.predict(
+                history_glist, num_rels, static_graph, test_triples_input, diffu_rep,model_output_o, output_reply_triple, use_cuda, current_query_history_graph)
 
         mrr_filter_snap_r, mrr_snap_r, rank_raw_r, rank_filter_r = utils.get_total_rank(
             test_triples, final_r_score, all_ans_r_list[time_idx], eval_bz=1000, rel_predict=1)
@@ -195,7 +205,7 @@ def test_single(args, model, history_glist, test_triples_input,
                 time_index, num_rels, num_nodes, use_cuda,
                 all_ans_list, static_graph,
                 diffu_rep=None, model_output_o=None,
-                output_reply_triple=None):
+                output_reply_triple=None, bcr_replays=None):
 
     model.eval()
 
@@ -204,16 +214,20 @@ def test_single(args, model, history_glist, test_triples_input,
     else:
         model_output_o = None
 
-    test_triples, final_score, final_r_score = model.predict(
-        history_glist,
-        num_rels,
-        static_graph,
-        test_triples_input,
-        diffu_rep,
-        model_output_o,
-        output_reply_triple,
-        use_cuda
-    )
+    if args.bcr_mode != 'original':
+        test_triples, final_score, final_r_score = bcr.predict(model,
+            history_glist, num_rels, static_graph, test_triples_input, bcr_replays, use_cuda)
+    else:
+        test_triples, final_score, final_r_score = model.predict(
+            history_glist,
+            num_rels,
+            static_graph,
+            test_triples_input,
+            diffu_rep,
+            model_output_o,
+            output_reply_triple,
+            use_cuda
+        )
 
     mrr_filter_snap, mrr_snap, rank_raw, rank_filter = \
         utils.get_total_rank(
@@ -243,7 +257,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     if n_bases is not None:
         args.n_bases = n_bases
     validate_args(args)
-    print(f"Baseline protocol: {PROTOCOL}")
+    print(f"Baseline protocol: {getattr(args, '_protocol', PROTOCOL)}")
     # Upstream declares --seed but never applies it. No flag preserves that
     # initialization policy; an explicit seed is a documented reproducibility opt-in.
     if args.seed is not None:
@@ -272,6 +286,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     train_list,valid_list,test_list = utils.spilt_data(data_list)
     data_history = args.data_root / args.dataset / "history_snap_v2"
     validate_history_cache(train_list, data.num_rels, data_history)
+    if bcr.enabled(args):
+        args._bcr = bcr.BCR(args, train_list, data.num_rels, data.num_nodes)
     prepare_run(args)
     fitlog.set_log_dir(str(args.run_dir / "fitlog" if args.run_dir else Path(__file__).resolve().parents[1] / "logs"))
     fitlog.add_hyper({key: str(value) if isinstance(value, Path) else value
@@ -576,22 +592,27 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 output = [torch.from_numpy(_).long().cuda() for _ in output] if use_cuda else [torch.from_numpy(_).long() for _ in output]
                 output=output[0]
                 
-                with torch.no_grad():
-                    output, diffu_rep, output_reply_triple = \
-                        model_diffpre.gereration_feature(
-                            args,
-                            train_sample_num,
-                            model_diffpre,
-                            model_repre,
-                            last_history,
-                            last_output,
-                            static_graph_diffu,
-                            output_re,
-                            output,
-                            use_cuda,
-                            train_list
-                        )
-                
+                if args.bcr_mode != "original":
+                    output, diffu_rep, output_reply_triple = args._bcr.training(
+                        train_sample_num, output, model_diffpre, model_repre,
+                        last_history, last_output, static_graph_diffu, use_cuda)
+                else:
+                    with torch.no_grad():
+                        output, diffu_rep, output_reply_triple = \
+                            model_diffpre.gereration_feature(
+                                args,
+                                train_sample_num,
+                                model_diffpre,
+                                model_repre,
+                                last_history,
+                                last_output,
+                                static_graph_diffu,
+                                output_re,
+                                output,
+                                use_cuda,
+                                train_list
+                            )
+
                 # best_mrr=0
                 early_stopping = EarlyStopping(patience=5, verbose=False, path=model_state_file)
                 early_stopping_dif = EarlyStopping(patience=5, verbose=False, path=diffu_model_state_file)
@@ -626,32 +647,43 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     test_triples_input = torch.LongTensor(
                         valid_list[train_sample_num]).cuda() if use_cuda else torch.LongTensor(valid_list[train_sample_num])
                     test_triples_input = test_triples_input.to(run_device)
-                    diffu_rep_test=None
-                    output_reply_triple_test=None
-                    if args.delete_feature_reply is False:
-                        with torch.no_grad():
-                            _, diffu_rep_test, output_reply_triple_test = \
-                                model_diffpre.gereration_feature(
-                                    args,
-                                    train_sample_num,
-                                    model_diffpre,
-                                    model_repre,
-                                    last_history,
-                                    last_output,
-                                    static_graph_diffu,
-                                    valid_list[train_sample_num],
-                                    test_triples_input,
-                                    use_cuda,
-                                    train_list
-                            )
-                    mrr, hits, _ = test_single(
-                        args, model, history_glist, test_triples_input,
-                        train_sample_num, num_rels, num_nodes, use_cuda,
-                        all_ans_list_valid, static_graph,
-                        diffu_rep_test, model_output_o,
-                        output_reply_triple_test
-                    )
-                    
+                    if args.bcr_mode != "original":
+                        replays = args._bcr.evaluation(train_sample_num,
+                            valid_list[train_sample_num][:, 0].tolist(),
+                            valid_list[train_sample_num][:, 2].tolist(), model_diffpre,
+                            model_repre, last_history, last_output, static_graph_diffu,
+                            run_device, use_cuda)
+                        mrr, hits, _ = test_single(args, model, history_glist,
+                            test_triples_input, train_sample_num, num_rels, num_nodes,
+                            use_cuda, all_ans_list_valid, static_graph,
+                            bcr_replays=replays)
+                    else:
+                        diffu_rep_test=None
+                        output_reply_triple_test=None
+                        if args.delete_feature_reply is False:
+                            with torch.no_grad():
+                                _, diffu_rep_test, output_reply_triple_test = \
+                                    model_diffpre.gereration_feature(
+                                        args,
+                                        train_sample_num,
+                                        model_diffpre,
+                                        model_repre,
+                                        last_history,
+                                        last_output,
+                                        static_graph_diffu,
+                                        valid_list[train_sample_num],
+                                        test_triples_input,
+                                        use_cuda,
+                                        train_list
+                                )
+                        mrr, hits, _ = test_single(
+                            args, model, history_glist, test_triples_input,
+                            train_sample_num, num_rels, num_nodes, use_cuda,
+                            all_ans_list_valid, static_graph,
+                            diffu_rep_test, model_output_o,
+                            output_reply_triple_test
+                        )
+
                     early_stopping(mrr, model)
                     if early_stopping.early_stop:
                         break
@@ -664,16 +696,26 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 if train_sample_num == idx[-1]:
                     diffu_rep_test = output_reply_triple_test = None
                     test_triples_input = torch.as_tensor(test_list[train_sample_num], dtype=torch.long, device=run_device)
-                    if args.delete_feature_reply is False:
-                        with torch.no_grad():
-                            _, diffu_rep_test, output_reply_triple_test = model_diffpre.gereration_feature(
-                                args, train_sample_num, model_diffpre, model_repre,
-                                last_history, last_output, static_graph_diffu,
-                                test_list[train_sample_num], test_triples_input, use_cuda, train_list)
-                    mrr, hits, _ = test_single(
-                        args, model, history_glist, test_triples_input, train_sample_num,
-                        num_rels, num_nodes, use_cuda, all_ans_list_test, static_graph,
-                        diffu_rep_test, model_output_o, output_reply_triple_test)
+                    if args.bcr_mode != "original":
+                        replays = args._bcr.evaluation(train_sample_num,
+                            test_list[train_sample_num][:, 0].tolist(),
+                            test_list[train_sample_num][:, 2].tolist(), model_diffpre,
+                            model_repre, last_history, last_output, static_graph_diffu,
+                            run_device, use_cuda, phase='last-stage-diagnostic')
+                        mrr, hits, _ = test_single(args, model, history_glist,
+                            test_triples_input, train_sample_num, num_rels, num_nodes,
+                            use_cuda, all_ans_list_test, static_graph, bcr_replays=replays)
+                    else:
+                        if args.delete_feature_reply is False:
+                            with torch.no_grad():
+                                _, diffu_rep_test, output_reply_triple_test = model_diffpre.gereration_feature(
+                                    args, train_sample_num, model_diffpre, model_repre,
+                                    last_history, last_output, static_graph_diffu,
+                                    test_list[train_sample_num], test_triples_input, use_cuda, train_list)
+                        mrr, hits, _ = test_single(
+                            args, model, history_glist, test_triples_input, train_sample_num,
+                            num_rels, num_nodes, use_cuda, all_ans_list_test, static_graph,
+                            diffu_rep_test, model_output_o, output_reply_triple_test)
                     print("Upstream last-stage TEST diagnostic (before diffusion):",
                           mrr.item(), *(hit.item() for hit in hits))
 

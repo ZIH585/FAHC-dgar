@@ -91,7 +91,7 @@ def prepare_run(args):
     if args.add_static_graph:
         files.append(data / 'e-w-graph.txt')
     args._provenance = {
-        'protocol': PROTOCOL,
+        'protocol': getattr(args, '_protocol', PROTOCOL),
         'upstream_commit': UPSTREAM_COMMIT,
         'settings': settings(args),
         'source_sha256': fingerprint([p for folder in ('src', 'diffusion', 'rgcn')

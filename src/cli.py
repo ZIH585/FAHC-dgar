@@ -206,6 +206,10 @@ def build_arg_parser():
     parser.add_argument("--run-dir", type=Path, default=None, help="Separate config, checkpoints and outputs for this run")
     parser.add_argument("--resume", type=Path, default=None, help="Resume a completed chronological stage from latest.pt")
     parser.add_argument("--final-validation", action="store_true", help="Also report final full-pipeline validation")
+    parser.add_argument('--bcr-mode', choices=('original', 'outgoing', 'incident', 'random'),
+                        default='original', help='Original OFF; direction-separated retrieval controls')
+    parser.add_argument('--bcr', dest='bcr_mode', action='store_const', const='incident',
+                        help='Enable BCR incoming + outgoing historical context')
     return parser
 
 
@@ -227,6 +231,13 @@ def validate_args(args):
         raise ValueError("start_reply must be 0: every chronological stage needs a diffusion checkpoint")
     if args.resume and (args.test or args.n_epochs != 1 or args.run_dir is None):
         raise ValueError("resume requires --run-dir, one chronological pass, and no --test")
+    if args.bcr_mode != 'original':
+        if (not args.diffuc or args.delete_feature_reply or args.delete_his_prompt
+                or args.n_epochs != 1 or args.grid_search or args.run_dir is None):
+            raise ValueError('BCR requires feature replay, subject prompt, one pass, no grid-search and --run-dir')
+        args._protocol = 'bcr-directional-v1'
+    else:
+        vars(args).pop('_protocol', None)
     if args.run_dir is not None:
         args.run_dir = args.run_dir.resolve()
     args.data_root = args.data_root.resolve()
