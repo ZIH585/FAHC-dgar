@@ -9,6 +9,7 @@ import numpy as np
 from rgcn.layers import UnionRGCNLayer, RGCNBlockLayer
 from src.model import BaseRGCN
 from src.decoder import ConvTransE, ConvTransR
+from src.pgr import ADAPTED, SharedAdapter
 from diffusion.difffu_21 import MultiHeadedAttention
 from rgcn.reservoir_sampler import *
 from rgcn.CorruptTriplesGlobal import *
@@ -187,9 +188,15 @@ class RecurrentRGCN(nn.Module):
         else:
             raise NotImplementedError
 
+        # Default OFF adds no Parameters and consumes no RNG.
+        self.pgr_adapter = (SharedAdapter(h_dim, args.pgr_adapter_rank)
+            if getattr(args, "pgr_mode", "original") in ADAPTED else None)
+
     def select_entity(self, tag, embeding, use_cuda):
         entity_all = torch.cat([tag[:, 0], tag[:, 2]])
         s_o_embeding = torch.cat([embeding[:, 0, :], embeding[:, 2, :]], dim=0)
+        if self.pgr_adapter is not None:
+            s_o_embeding = self.pgr_adapter(s_o_embeding)
         # s_o_embeding = embeding[:, 0, :]
         embeding_dict = dict()
         # for i, ent in enumerate(entity_all):

@@ -206,6 +206,15 @@ def build_arg_parser():
     parser.add_argument("--run-dir", type=Path, default=None, help="Separate config, checkpoints and outputs for this run")
     parser.add_argument("--resume", type=Path, default=None, help="Resume a completed chronological stage from latest.pt")
     parser.add_argument("--final-validation", action="store_true", help="Also report final full-pipeline validation")
+    parser.add_argument('--pgr-mode', choices=('original', 'mean', 'shared', 'mean-shared',
+                        'geometry', 'geometry-random', 'geometry-isotropic'), default='original')
+    parser.add_argument('--pgr-adapter-rank', type=int, default=16)
+    parser.add_argument('--pgr-risk-rank', type=int, default=4)
+    parser.add_argument('--pgr-geometry-facts', type=int, default=64,
+                        help='Maximum current and past TRAIN facts each, for once-per-stage geometry')
+    parser.add_argument('--pgr-risk-strength', type=float, default=1.0)
+    parser.add_argument('--pgr-diagnostics', action='store_true',
+                        help='Passive stage statistics and final query CSV/summary')
     return parser
 
 
@@ -230,4 +239,18 @@ def validate_args(args):
     if args.run_dir is not None:
         args.run_dir = args.run_dir.resolve()
     args.data_root = args.data_root.resolve()
+    if args.pgr_diagnostics and args.run_dir is None:
+        raise ValueError('PGR diagnostics require --run-dir')
+    if args.pgr_mode != 'original':
+        if (args.run_dir is None or args.n_epochs != 1 or args.grid_search
+                or args.diffuc != 'add' or args.delete_feature_reply or args.delete_his_prompt
+                or args.vl or args.delete_score or not args.entity_prediction or args.seed is None):
+            raise ValueError('PGR requires run-dir, explicit seed, one chronological pass, '
+                             'entity prediction and Original add/guided HCP path (vl=false)')
+        if (not 1 <= args.pgr_adapter_rank <= args.n_hidden
+                or not 1 <= args.pgr_risk_rank <= args.n_hidden
+                or args.pgr_geometry_facts < 1
+                or not math.isfinite(args.pgr_risk_strength)
+                or not 0 <= args.pgr_risk_strength <= 1):
+            raise ValueError('invalid PGR ranks, geometry facts or contraction strength')
     return args

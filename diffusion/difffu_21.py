@@ -610,6 +610,9 @@ class DiffuRec(nn.Module):
             sample_xt = model_mean + nonzero_mask * th.exp(0.5 * model_log_variance) * noise  ## sample x_{t-1} from the \mu(x_{t-1}) distribution based on the reparameter trick
             sample_xt = torch.concat(
                     [x_0[:,0:2,:], sample_xt.unsqueeze(dim=1)], dim=1)
+            if getattr(args, "pgr_mode", "original") != "original":
+                sample_xt = args._pgr_runtime.sample(model, tag, x_0, model_mean,
+                    (nonzero_mask * th.exp(0.5 * model_log_variance))[:, :1], sample_xt)
         return sample_xt
 
     # def reverse_p_sample(self, model, tag, item_rep, noise_x_t, c, sr_embs, mask_seq, history_glist, triples, static_graph, args, use_cuda, mask=None, query_sub3=None):

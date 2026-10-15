@@ -308,8 +308,13 @@ class Att_Diffuse_model(nn.Module):
                 query_subject.shape[0], query_subject.device)
             c = query_subject+query_relation
 
-            rep_diffu = self.reverse(model, tag, inter_embeddings_drop.detach().requires_grad_(True), inter_embeddings_drop[:, -1, :].detach(
-            ).requires_grad_(True), initial_h.detach().requires_grad_(True), c, mask_seq, history_glist, triples, static_graph, use_cuda, args, [])
+            if getattr(args, "pgr_mode", "original") != "original" and not args.vl:
+                with args._pgr_runtime.at_stage(ct):
+                    rep_diffu = self.reverse(model, tag, inter_embeddings_drop.detach().requires_grad_(True), inter_embeddings_drop[:, -1, :].detach(
+                    ).requires_grad_(True), initial_h.detach().requires_grad_(True), c, mask_seq, history_glist, triples, static_graph, use_cuda, args, [])
+            else:
+                rep_diffu = self.reverse(model, tag, inter_embeddings_drop.detach().requires_grad_(True), inter_embeddings_drop[:, -1, :].detach(
+                ).requires_grad_(True), initial_h.detach().requires_grad_(True), c, mask_seq, history_glist, triples, static_graph, use_cuda, args, [])
 
             rep_item, t, object_protype_gt = None, None, None
 
