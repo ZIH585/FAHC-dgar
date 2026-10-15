@@ -14,7 +14,8 @@ DCR mean 和 Shared 的已有正结果共同提示：应研究生成表示进入
 它们没有证明“末端噪声是主要错误来源”，也没有证明两者组合有收益。
 此前的 PGR 只有框架，没有固定学习规则。本次 **v1 是明确指定的新研究实现**：
 阶段开始时估计训练损失对回放噪声的敏感子空间，只衰减这些方向的末端扰动，
-同时训练共享线性残差适配器。尚无本方法的真实训练成绩，不保证提升。
+同时训练共享线性残差适配器。首次真实主筛选已经完成：geometry 未超过 mean+Shared，
+按预设门槛停止 v1 几何主线，详见 [2026-10-15 结果报告](PGR_RESULTS_20261015.md)。
 
 ## 数学定义
 
@@ -109,11 +110,13 @@ catalog 只保存 Q[d,r]、w[r]、标量统计，不保存图、标签、计算�
 GPU 只缓存当前阶段。无需另外存 replay 数据或 teacher 参数。
 额外训练开销：每个有回放阶段一次图 forward、两次关于 bank 的反向，以及
 d×d eigendecomposition；每个 replay 的低秩乘法 O(facts*d*r)。实际 GPU 时间和
-峰值显存尚未测量，不能用 CPU smoke test 估算提升和成本。
+峰值显存未做受控测量，不能用 CPU smoke test 或不同负载下的墙钟时间估算提升和成本。
 
 `latest.pt` 可通过原 `--resume .../latest.pt --run-dir ...` 恢复；同一源码、
 科学参数、seed、data/cache 是前提。catalog 检查完整阶段集合、shape、finite、
-权重范围、正交性；`--test` 也从 latest 恢复目录。不要把 RAHA checkpoint 用作
+权重范围、正交性；`--test` 也从 latest 恢复目录。**实际 geometry checkpoint 已发现
+正交性恢复校验容差过严的问题；再次恢复前须按结果报告处理，不能依靠此前 CPU toy roundtrip。**
+不要把 RAHA checkpoint 用作
 PGR 训练起点；旧 checkpoint 只用于独立诊断脚本。
 
 ## 参数和控制
