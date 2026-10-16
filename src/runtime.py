@@ -43,7 +43,9 @@ def restore_rng(state, device):
 
 def settings(args):
     excluded = {'gpu', 'run_dir', 'resume', 'test', 'final_validation', 'data_root',
-                'num_nodes', 'num_rels'}
+                'num_nodes', 'num_rels', 'cur_diagnostics'}
+    if getattr(args, 'cur_mode', 'original') == 'original':
+        excluded.update(key for key in vars(args) if key.startswith('cur_'))
     return {key: str(value) if isinstance(value, Path) else value
             for key, value in vars(args).items()
             if key not in excluded and not key.startswith('_')}
@@ -91,7 +93,8 @@ def prepare_run(args):
     if args.add_static_graph:
         files.append(data / 'e-w-graph.txt')
     args._provenance = {
-        'protocol': PROTOCOL,
+        'protocol': (PROTOCOL if getattr(args, 'cur_mode', 'original') == 'original'
+                     else f'cur-{args.cur_mode}-v1'),
         'upstream_commit': UPSTREAM_COMMIT,
         'settings': settings(args),
         'source_sha256': fingerprint([p for folder in ('src', 'diffusion', 'rgcn')

@@ -206,6 +206,15 @@ def build_arg_parser():
     parser.add_argument("--run-dir", type=Path, default=None, help="Separate config, checkpoints and outputs for this run")
     parser.add_argument("--resume", type=Path, default=None, help="Resume a completed chronological stage from latest.pt")
     parser.add_argument("--final-validation", action="store_true", help="Also report final full-pipeline validation")
+    parser.add_argument('--cur-mode', choices=('original', 'mean-shared', 'dual-replay', 'dual-direction', 'utility'), default='original')
+    parser.add_argument('--cur-adapter-rank', type=int, default=16)
+    parser.add_argument('--cur-router-hidden', type=int, default=32)
+    parser.add_argument('--cur-probe-facts', type=int, default=128, help='Maximum current TRAIN facts; inverse queries are added')
+    parser.add_argument('--cur-score-batch-size', type=int, default=256, help='Evaluation/probe decoder chunk size, not training batch size')
+    parser.add_argument('--cur-router-steps', type=int, default=10)
+    parser.add_argument('--cur-router-lr', type=float, default=0.01)
+    parser.add_argument('--cur-threshold', type=float, default=0.5)
+    parser.add_argument('--cur-diagnostics', action='store_true')
     return parser
 
 
@@ -230,4 +239,16 @@ def validate_args(args):
     if args.run_dir is not None:
         args.run_dir = args.run_dir.resolve()
     args.data_root = args.data_root.resolve()
+    if args.cur_diagnostics and args.run_dir is None:
+        raise ValueError('CUR diagnostics require --run-dir')
+    if args.cur_mode != 'original':
+        if (args.run_dir is None or args.seed is None or args.n_epochs != 1 or args.grid_search
+                or args.diffuc != 'add' or args.vl or args.delete_feature_reply or args.delete_his_prompt
+                or args.delete_score or not args.entity_prediction):
+            raise ValueError('CUR requires a run-dir, explicit seed, one chronological pass and Original guided add replay')
+        if (not 1 <= args.cur_adapter_rank <= args.n_hidden or args.cur_router_hidden < 1
+                or args.cur_probe_facts < 1 or args.cur_score_batch_size < 2 or args.cur_router_steps < 1
+                or not math.isfinite(args.cur_router_lr) or args.cur_router_lr <= 0
+                or not math.isfinite(args.cur_threshold) or not 0 < args.cur_threshold < 1):
+            raise ValueError('invalid CUR ranks/router/probe/threshold settings')
     return args

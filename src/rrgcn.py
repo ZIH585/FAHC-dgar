@@ -1,6 +1,7 @@
 import math
 
 import torch
+from src.cur import SharedAdapter, UtilityRouter, DUAL
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
@@ -187,9 +188,16 @@ class RecurrentRGCN(nn.Module):
         else:
             raise NotImplementedError
 
+        # Default OFF adds no parameters and consumes no initialization RNG.
+        active = getattr(args, 'cur_mode', 'original') != 'original'
+        self.cur_adapter = SharedAdapter(h_dim, args.cur_adapter_rank) if active else None
+        self.cur_router = UtilityRouter(num_rels, args.cur_router_hidden) if getattr(args, 'cur_mode', 'original') in DUAL else None
+
     def select_entity(self, tag, embeding, use_cuda):
         entity_all = torch.cat([tag[:, 0], tag[:, 2]])
         s_o_embeding = torch.cat([embeding[:, 0, :], embeding[:, 2, :]], dim=0)
+        if self.cur_adapter is not None:
+            s_o_embeding = self.cur_adapter(s_o_embeding)
         # s_o_embeding = embeding[:, 0, :]
         embeding_dict = dict()
         # for i, ent in enumerate(entity_all):
@@ -283,6 +291,10 @@ class RecurrentRGCN(nn.Module):
             inverse_test_triplets[~mask, 1] = inverse_test_triplets[~mask, 1] - self.num_rels
             all_triples = torch.cat((test_triplets, inverse_test_triplets))
 
+            self._cur_observation = None
+            if self.cur_router is not None and model_output is not None and len(model_output):
+                from src.cur import predict
+                return predict(self, test_graph, static_graph, all_triples, model_output, tag)
 
             evolve_embs, _, r_emb, _, _ = self.forward(
                 test_graph, static_graph, use_cuda, model_output=model_output,model_output_x_t=model_output_o, tag=tag,
@@ -330,7 +342,7 @@ class RecurrentRGCN(nn.Module):
         all_triples = torch.cat([triples, inverse_triples])
         return all_triples
 
-    def get_loss(self, glist, triples, static_graph, use_cuda,known_entities=None,negative_rate=None, model_output=None,model_output_x_t=None,tag=None, diffuc=None, output_reply_triple=None, current_query_history_graph=None,mode=None,inc_model=None):
+    def get_loss(self, glist, triples, static_graph, use_cuda,known_entities=None,negative_rate=None, model_output=None,model_output_x_t=None,tag=None, diffuc=None, output_reply_triple=None, current_query_history_graph=None,mode=None,inc_model=None, feature_injection=True, entity_only=False):
         """
         :param glist:
         :param triplets:
@@ -346,19 +358,22 @@ class RecurrentRGCN(nn.Module):
         loss_Reply = self.dynamic_emb.new_zeros(1)
         
         if model_output is not None:
-            entity_all, ent_embeding = self.select_entity(
-                tag, model_output, use_cuda)
+            if not entity_only:
+                entity_all, ent_embeding = self.select_entity(
+                    tag, model_output, use_cuda)
             output_reply_triple = torch.as_tensor(
                 output_reply_triple, dtype=torch.long, device=triples.device)
             all_output_reply_triple=self.get_all_triple(output_reply_triple)
 
         all_triples=self.get_all_triple(triples)
         
-        evolve_embs, static_emb, r_emb, _, _ = self.forward(glist, static_graph, use_cuda, model_output,model_output_x_t, tag, diffu_rep=diffuc,
+        evolve_embs, static_emb, r_emb, _, _ = self.forward(glist, static_graph, use_cuda,
+                                                            model_output if feature_injection else None,
+                                                            model_output_x_t if feature_injection else None, tag, diffu_rep=diffuc,
                                                             output_reply_triple=output_reply_triple, current_query_history_graph=current_query_history_graph)
         pre_emb = F.normalize(
             evolve_embs[-1]) if self.layer_norm else evolve_embs[-1]
-        if model_output is not None:
+        if model_output is not None and not entity_only:
             loss_Reply=self.loss_reply(pre_emb[entity_all,:],ent_embeding[entity_all,:])
         
         if self.entity_prediction:
@@ -369,16 +384,17 @@ class RecurrentRGCN(nn.Module):
         if model_output is not None:
             loss_ent += self.loss_of_reply(pre_emb,r_emb,output_reply_triple,mode='e')
 
-        if self.relation_prediction:
+        if self.relation_prediction and not entity_only:
             score_rel = self.rdecoder.forward(
                 pre_emb, r_emb, all_triples, mode="train").view(-1, 2 * self.num_rels)
             loss_rel += self.loss_r(score_rel, all_triples[:, 1])
         
         if model_output is not None:
             loss_ent += self.args.mu*self.loss_of_reply(pre_emb,r_emb,all_output_reply_triple,mode='e')
-            loss_rel += self.args.mu_r*self.loss_of_reply(pre_emb,r_emb,all_output_reply_triple,mode='r')
+            if not entity_only:
+                loss_rel += self.args.mu_r*self.loss_of_reply(pre_emb,r_emb,all_output_reply_triple,mode='r')
 
-        if self.use_static:
+        if self.use_static and not entity_only:
             if self.discount == 1:
                 for time_step, evolve_emb in enumerate(evolve_embs):
                     step = (self.angle * math.pi / 180) * (time_step + 1)

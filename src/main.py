@@ -15,6 +15,8 @@ import itertools
 import argparse
 from pathlib import Path
 from src.cli import build_arg_parser, validate_args
+from src.cur import CURRuntime, checkpoint_auxiliary, dual_loss
+from src.cur_diagnostics import EvaluationRecorder
 from src.runtime import (PROTOCOL, prepare_run, restore_evaluation_rng,
                          save_training_state, restore_training_state, validate_history_cache)
 from rgcn import utils
@@ -43,7 +45,7 @@ def getReverseSample(test_triplets, num_rels):
 def test(args, model, history_list, test_list, num_rels, num_nodes,
          use_cuda, all_ans_list, all_ans_r_list, model_name,
          static_graph, mode, last_history, last_output,
-         static_graph_diffu, model_diffpre):
+         static_graph_diffu, model_diffpre, phase="test"):
     """
     :param model: model used to test
     :param history_list:    all input history snap shot list, not include output label train list or valid list
@@ -80,6 +82,8 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
         print("\n"+"-"*10+"start testing"+"-"*10+"\n")
         model.load_state_dict(checkpoint)
 
+    recorder = (EvaluationRecorder(args, phase, history_list, num_rels)
+                if getattr(args, 'cur_diagnostics', False) else None)
     model.eval()
     device = next(model.parameters()).device
     # do not have inverse relation in test input
@@ -140,6 +144,8 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
             test_triples, final_r_score, all_ans_r_list[time_idx], eval_bz=1000, rel_predict=1)
         mrr_filter_snap, mrr_snap, rank_raw, rank_filter = utils.get_total_rank(
             test_triples, final_score, all_ans_list[time_idx], eval_bz=1000, rel_predict=0)
+        if recorder is not None:
+            recorder.record(time_idx, test_triples, rank_raw, rank_filter, model, diffu_rep)
         
         mrr,hits=utils.stat_ranks_record(rank_filter,"predict_filter_ent")
         # One score per time slice, with inverse queries included by predict().
@@ -188,6 +194,8 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
     mrr_raw_r = utils.stat_ranks(ranks_raw_r, "raw_rel")
     mrr_filter_r = utils.stat_ranks(ranks_filter_r, "filter_rel")
     
+    if recorder is not None:
+        recorder.finish(len(test_list) - 1)
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r, last_history, last_output,MRRs,H1,H3,H10,mrr_sum_avg,hit1_sum_avg,hit3_sum_avg,hit10_sum_avg
 
 @torch.no_grad()
@@ -468,9 +476,12 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
 
     # optimizer
     optimizer = torch.optim.Adam(
-        model.parameters(), lr=args.lr, weight_decay=1e-5)
+        (p for name, p in model.named_parameters() if not name.startswith('cur_router.')),
+        lr=args.lr, weight_decay=1e-5)
     optimizer_diffu = torch.optim.Adam(
         diffu.parameters(), lr=args.lr, weight_decay=1e-5)
+    if args.cur_mode != 'original':
+        args._cur_runtime = CURRuntime(args, model)
     per_epochs = (len(train_list)//args.accumulation_steps)
     accumulation_steps = args.accumulation_steps
     
@@ -484,6 +495,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     if args.resume:
         first_stage, resumed_auxiliary = restore_training_state(
             args, model, diffu, model_repre, model_diffpre, optimizer, optimizer_diffu, run_device)
+        if args.cur_mode != 'original':
+            args._cur_runtime.load_state_dict(resumed_auxiliary['cur'], first_stage - 1)
 
     if args.test:
         if not os.path.exists(model_state_file):
@@ -497,6 +510,9 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
             model_diffpre.load_state_dict(torch.load(diffu_model_state_file, map_location="cpu", weights_only=True))
         if args.run_dir:
             restore_evaluation_rng(args, run_device, len(train_list) - 1)
+            if args.cur_mode != 'original':
+                auxiliary = torch.load(args.run_dir / 'latest.pt', map_location='cpu', weights_only=False)['auxiliary']
+                args._cur_runtime.load_state_dict(auxiliary['cur'], len(train_list) - 1)
 
         final_idx = len(train_list) - 1
         input_list = train_list[max(0, final_idx - args.train_history_len):final_idx]
@@ -517,7 +533,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
             print("Final full-pipeline VALIDATION (supplementary; after TEST)")
             test(args, model, train_list, valid_list, num_rels, num_nodes, use_cuda,
                  all_ans_list_valid, all_ans_list_r_valid, model_state_file, static_graph,
-                 "test", result[4], result[5], static_graph_diffu, model_diffpre)
+                 "test", result[4], result[5], static_graph_diffu, model_diffpre, phase="validation")
         fitlog.finish()
     else:
         print("----------------------------------------start training----------------------------------------\n")
@@ -603,10 +619,17 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     model_output_o=diffu_rep[:,-1,:]
                 else:
                     model_output_o=None    
+
+                if getattr(args, 'cur_mode', 'original') != 'original':
+                    args._cur_runtime.fit(train_sample_num, model, history_glist,
+                                          output, static_graph, diffu_rep, output_reply_triple)
+                loss_function = model.get_loss
+                if getattr(args, 'cur_mode', 'original') in ('dual-replay', 'dual-direction', 'utility'):
+                    loss_function = lambda *a, **kw: dual_loss(model, *a, **kw)
                     
                 for epoch in range(args.regcn_epochs):
                     model.train()
-                    loss_e, loss_r, loss_static, emebding_entity,loss_reply = model.get_loss(
+                    loss_e, loss_r, loss_static, emebding_entity,loss_reply = loss_function(
                         history_glist, output, static_graph, use_cuda, model_output=diffu_rep,model_output_x_t=model_output_o, tag=output_reply_triple, diffuc=args.diffuc, output_reply_triple=output_reply_triple, current_query_history_graph=None)
                     
                     loss = args.task_weight*loss_e+ \
@@ -772,7 +795,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 # The next stage starts from these BEST feature weights and the
                 # LAST optimizer states, exactly as in the uninterrupted loop.
                 save_training_state(args, train_sample_num, model_repre, model_diffpre,
-                                    optimizer, optimizer_diffu, run_device, auxiliary=None)
+                                    optimizer, optimizer_diffu, run_device,
+                                    auxiliary=(checkpoint_auxiliary(args, train_sample_num) if getattr(args, 'cur_mode', 'original') != 'original' else None))
 
         print("Final full-pipeline TEST")
         mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r, last_history, last_output,mrrs,h1s,h3s,h10s,m_,h1,h3,h10 = test(args,
@@ -795,7 +819,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
             print("Final full-pipeline VALIDATION (supplementary; after TEST)")
             test(args, model, train_list, valid_list, num_rels, num_nodes, use_cuda,
                  all_ans_list_valid, all_ans_list_r_valid, model_state_file, static_graph,
-                 "test", last_history, last_output, static_graph_diffu, model_diffpre)
+                 "test", last_history, last_output, static_graph_diffu, model_diffpre, phase="validation")
         fitlog.finish()
         # pca(entity_old,entity_new,args.dataset,mrr_old,mrr_new)
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r
