@@ -581,13 +581,20 @@ class DiffuRec(nn.Module):
                 # embedding = F.normalize(model.h) if model.layer_norm else model.h
                 # score = model.decoder_ob.forward(embedding, model.h_0, tag, mode="test")
                 embedding = F.normalize(e_embeding[-1]) if model.layer_norm else e_embeding[-1]
-                score = model.decoder_ob.forward(embedding, r_embed, tag, mode="test")
+                if getattr(model, 'rcpr_head', None) is not None:
+                    score = model.score_entities(embedding, r_embed, tag, mode="test")
+                else:
+                    score = model.decoder_ob.forward(embedding, r_embed, tag, mode="test")
 
                 log_probs = F.log_softmax(score, dim=-1)
 
                 # selected = log_probs[range(len(score)),all_triples[:,2]]
                 selected = log_probs[range(len(score)),tag[:,2]]
-                grad=torch.autograd.grad(selected.sum(), model_output_t_)[0]
+                try:
+                    grad=torch.autograd.grad(selected.sum(), model_output_t_)[0]
+                finally:
+                    if getattr(model, 'rcpr_head', None) is not None:
+                        model.clear_rcpr_context()
                 # diffu_var = torch.autograd.grad(model_output.sum(), input_item)[0].var()
                 # new_x_0=model_output.float() + diffu_var *(grad* args.classifier_scale).float()
                 # new_x_0=model_output_t_.float() + model_log_variance *(grad* args.classifier_scale).float()
@@ -608,6 +615,8 @@ class DiffuRec(nn.Module):
             noise = torch.randn_like(noise_x_t)
             nonzero_mask = ((t != 0).float().view(-1, *([1] * (len(noise_x_t.shape) - 1))))  # no noise when t == 0
             sample_xt = model_mean + nonzero_mask * th.exp(0.5 * model_log_variance) * noise  ## sample x_{t-1} from the \mu(x_{t-1}) distribution based on the reparameter trick
+            if getattr(args, 'rcpr_mode', 'original') != 'original':
+                sample_xt = model_mean
             sample_xt = torch.concat(
                     [x_0[:,0:2,:], sample_xt.unsqueeze(dim=1)], dim=1)
         return sample_xt

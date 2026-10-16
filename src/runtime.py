@@ -43,10 +43,11 @@ def restore_rng(state, device):
 
 def settings(args):
     excluded = {'gpu', 'run_dir', 'resume', 'test', 'final_validation', 'data_root',
-                'num_nodes', 'num_rels'}
+                'num_nodes', 'num_rels', 'rcpr_diagnostics'}
     return {key: str(value) if isinstance(value, Path) else value
             for key, value in vars(args).items()
-            if key not in excluded and not key.startswith('_')}
+            if key not in excluded and not key.startswith('_')
+            and not (key.startswith('rcpr_') and getattr(args, 'rcpr_mode', 'original') == 'original')}
 
 
 def fingerprint(paths, root):
@@ -91,7 +92,8 @@ def prepare_run(args):
     if args.add_static_graph:
         files.append(data / 'e-w-graph.txt')
     args._provenance = {
-        'protocol': PROTOCOL,
+        'protocol': (PROTOCOL if getattr(args, 'rcpr_mode', 'original') == 'original'
+                     else f'rcpr-{args.rcpr_mode}-v1'),
         'upstream_commit': UPSTREAM_COMMIT,
         'settings': settings(args),
         'source_sha256': fingerprint([p for folder in ('src', 'diffusion', 'rgcn')

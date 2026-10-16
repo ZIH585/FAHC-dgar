@@ -206,6 +206,17 @@ def build_arg_parser():
     parser.add_argument("--run-dir", type=Path, default=None, help="Separate config, checkpoints and outputs for this run")
     parser.add_argument("--resume", type=Path, default=None, help="Resume a completed chronological stage from latest.pt")
     parser.add_argument("--final-validation", action="store_true", help="Also report final full-pipeline validation")
+    parser.add_argument('--rcpr', action='store_const', const='prototype', dest='rcpr_mode', default=argparse.SUPPRESS,
+                        help='Enable relation-conditioned prototype replay')
+    parser.add_argument('--rcpr-mode', choices=('original', 'mean-shared', 'mean-head', 'prototype', 'shuffled'),
+                        default='original')
+    parser.add_argument('--rcpr-adapter-rank', type=int, default=16)
+    parser.add_argument('--rcpr-rank', type=int, default=16, help='Low-rank entity score correction')
+    parser.add_argument('--rcpr-score-chunk', type=int, default=256,
+                        help='Rows per correction chunk; does not change decoder BatchNorm batches')
+    parser.add_argument('--rcpr-shuffle-seed', type=int, default=0,
+                        help='Private RNG for the within-entity, within-role shuffled control')
+    parser.add_argument('--rcpr-diagnostics', action='store_true', help='Passive stage and final query records')
     return parser
 
 
@@ -227,6 +238,18 @@ def validate_args(args):
         raise ValueError("start_reply must be 0: every chronological stage needs a diffusion checkpoint")
     if args.resume and (args.test or args.n_epochs != 1 or args.run_dir is None):
         raise ValueError("resume requires --run-dir, one chronological pass, and no --test")
+    if args.rcpr_mode != 'original':
+        if (not args.diffuc or args.diffuc != 'add' or args.delete_feature_reply
+                or args.delete_his_prompt or args.vl or args.grid_search or args.n_epochs != 1):
+            raise ValueError('RCPR needs one chronological pass, Original add fusion and feature/HCP replay')
+        if args.run_dir is None:
+            raise ValueError('RCPR requires an independent --run-dir')
+    if args.rcpr_diagnostics and args.run_dir is None:
+        raise ValueError('RCPR diagnostics require --run-dir')
+    if args.rcpr_mode != 'original' and (
+            not 1 <= args.rcpr_adapter_rank <= args.n_hidden or not 1 <= args.rcpr_rank <= args.n_hidden
+            or args.rcpr_score_chunk < 1 or args.rcpr_shuffle_seed < 0):
+        raise ValueError('Invalid RCPR rank, chunk size or shuffle seed')
     if args.run_dir is not None:
         args.run_dir = args.run_dir.resolve()
     args.data_root = args.data_root.resolve()

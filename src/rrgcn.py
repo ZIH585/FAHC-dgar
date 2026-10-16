@@ -9,6 +9,7 @@ import numpy as np
 from rgcn.layers import UnionRGCNLayer, RGCNBlockLayer
 from src.model import BaseRGCN
 from src.decoder import ConvTransE, ConvTransR
+from src.rcpr import SharedAdapter, ScoreResidual, make_layout, make_context
 from diffusion.difffu_21 import MultiHeadedAttention
 from rgcn.reservoir_sampler import *
 from rgcn.CorruptTriplesGlobal import *
@@ -187,9 +188,40 @@ class RecurrentRGCN(nn.Module):
         else:
             raise NotImplementedError
 
+        mode = getattr(args, 'rcpr_mode', 'original')
+        self.rcpr_adapter = SharedAdapter(h_dim, args.rcpr_adapter_rank) if mode != 'original' else None
+        self.rcpr_head = (ScoreResidual(h_dim, args.rcpr_rank, args.rcpr_score_chunk)
+                          if mode in ('mean-head', 'prototype', 'shuffled') else None)
+        self._rcpr_context = None
+        self._rcpr_tag = None
+        self._rcpr_tag_version = None
+        self._rcpr_layout = None
+
+    def clear_rcpr_context(self):
+        # Layout is integer-only; never cache a generated or adapted feature graph.
+        self._rcpr_context = None
+
+    def rcpr_layout(self, tags):
+        if self._rcpr_tag is not tags or self._rcpr_tag_version != tags._version:
+            self._rcpr_layout = make_layout(tags, self.num_ents, self.num_rels,
+                shuffled=getattr(self.args, 'rcpr_mode', '') == 'shuffled',
+                seed=(getattr(self.args, 'seed', None) or 0) + self.args.rcpr_shuffle_seed)
+            self._rcpr_tag = tags
+            self._rcpr_tag_version = tags._version
+        return self._rcpr_layout
+
+    def score_entities(self, embedding, relations, triples, mode='train'):
+        if self.rcpr_head is None or self._rcpr_context is None:
+            return self.decoder_ob.forward(embedding, relations, triples, mode=mode)
+        scores, query = self.decoder_ob.forward(embedding, relations, triples, mode=mode, return_query=True)
+        return self.rcpr_head(scores, query, triples[:, :2], self._rcpr_context,
+                              mean_control=self.args.rcpr_mode == 'mean-head')
+
     def select_entity(self, tag, embeding, use_cuda):
         entity_all = torch.cat([tag[:, 0], tag[:, 2]])
         s_o_embeding = torch.cat([embeding[:, 0, :], embeding[:, 2, :]], dim=0)
+        if self.rcpr_adapter is not None:
+            s_o_embeding = self.rcpr_adapter(s_o_embeding)
         # s_o_embeding = embeding[:, 0, :]
         embeding_dict = dict()
         # for i, ent in enumerate(entity_all):
@@ -208,6 +240,7 @@ class RecurrentRGCN(nn.Module):
         return entity_all, ent_embeding
 
     def forward(self, g_list, static_graph, use_cuda, model_output=None,model_output_x_t=None, tag=None, diffu_rep="add", output_reply_triple=None, current_query_history_graph=None):
+        self.clear_rcpr_context()
         if model_output is not None and len(model_output) == 0:
             model_output = None
         gate_list = []
@@ -235,6 +268,9 @@ class RecurrentRGCN(nn.Module):
     
             entity_all, ent_embeding = self.select_entity(
                 tag, model_output, use_cuda)
+            if self.rcpr_head is not None:
+                occurrences = self.rcpr_adapter(torch.cat((model_output[:, 0], model_output[:, 2])))
+                self._rcpr_context = make_context(self.rcpr_layout(tag), occurrences, ent_embeding)
 
         for i, g in enumerate(g_list):
             g = g.to(device)
@@ -291,14 +327,15 @@ class RecurrentRGCN(nn.Module):
             embedding = F.normalize(
                 evolve_embs[-1]) if self.layer_norm else evolve_embs[-1]
 
-            score = self.decoder_ob.forward(
+            score = self.score_entities(
                 embedding, r_emb, all_triples, mode="test")
             score_rel = self.rdecoder.forward(
                 embedding, r_emb, all_triples, mode="test")
+            self.clear_rcpr_context()
             return all_triples, score, score_rel
     def loss_of_reply(self, e_embedding, r_embedding, reply,mode='e'):
         if mode == 'e':
-            scores_ob = self.decoder_ob.forward(
+            scores_ob = self.score_entities(
                     e_embedding, r_embedding, reply).view(-1, self.num_ents)
             loss = self.loss_e(scores_ob, reply[:, 2])
         elif mode == 'r':
@@ -317,7 +354,7 @@ class RecurrentRGCN(nn.Module):
         temperature = 0.07
         scores = torch.matmul(rep_diffu_norm, item_emb_norm.t())/temperature
         # """
-        scores_ob = self.decoder_ob.forward(rep_diffu, r_emb, labels).view(-1, self.num_ents)
+        scores_ob = self.score_entities(rep_diffu, r_emb, labels).view(-1, self.num_ents)
         loss_ent = self.loss_e(scores_ob, labels[:, 2])
         
         return loss_ent
@@ -345,6 +382,8 @@ class RecurrentRGCN(nn.Module):
         loss_static = self.dynamic_emb.new_zeros(1)
         loss_Reply = self.dynamic_emb.new_zeros(1)
         
+        if self.rcpr_adapter is not None and model_output is not None and len(model_output) == 0:
+            model_output = None
         if model_output is not None:
             entity_all, ent_embeding = self.select_entity(
                 tag, model_output, use_cuda)
@@ -362,7 +401,7 @@ class RecurrentRGCN(nn.Module):
             loss_Reply=self.loss_reply(pre_emb[entity_all,:],ent_embeding[entity_all,:])
         
         if self.entity_prediction:
-            scores_ob = self.decoder_ob.forward(
+            scores_ob = self.score_entities(
                 pre_emb, r_emb, all_triples).view(-1, self.num_ents)
             loss_ent += self.loss_e(scores_ob, all_triples[:, 2])
             
@@ -413,6 +452,7 @@ class RecurrentRGCN(nn.Module):
                     loss_static += self.weight * \
                         torch.sum(torch.masked_select(
                             math.cos(step) - sim_matrix, mask))
+        self.clear_rcpr_context()
         return loss_ent, loss_rel, loss_static, evolve_embs[-1],loss_Reply
 
 

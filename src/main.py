@@ -20,6 +20,7 @@ from src.runtime import (PROTOCOL, prepare_run, restore_evaluation_rng,
 from rgcn import utils
 from rgcn.utils import *
 from src.rrgcn import RecurrentRGCN
+from src.rcpr_diagnostics import EvaluationRecorder, record_training_stage
 from src.hyperparameter_range import hp_range
 import torch.nn.modules.rnn
 from collections import defaultdict
@@ -43,7 +44,7 @@ def getReverseSample(test_triplets, num_rels):
 def test(args, model, history_list, test_list, num_rels, num_nodes,
          use_cuda, all_ans_list, all_ans_r_list, model_name,
          static_graph, mode, last_history, last_output,
-         static_graph_diffu, model_diffpre):
+         static_graph_diffu, model_diffpre, phase="test"):
     """
     :param model: model used to test
     :param history_list:    all input history snap shot list, not include output label train list or valid list
@@ -80,6 +81,8 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
         print("\n"+"-"*10+"start testing"+"-"*10+"\n")
         model.load_state_dict(checkpoint)
 
+    recorder = (EvaluationRecorder(args, phase, history_list, num_rels)
+                if getattr(args, 'rcpr_diagnostics', False) else None)
     model.eval()
     device = next(model.parameters()).device
     # do not have inverse relation in test input
@@ -141,6 +144,8 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
         mrr_filter_snap, mrr_snap, rank_raw, rank_filter = utils.get_total_rank(
             test_triples, final_score, all_ans_list[time_idx], eval_bz=1000, rel_predict=0)
         
+        if recorder is not None:
+            recorder.record(time_idx, test_triples, rank_raw, rank_filter, model, diffu_rep)
         mrr,hits=utils.stat_ranks_record(rank_filter,"predict_filter_ent")
         # One score per time slice, with inverse queries included by predict().
         mrr_value = mrr.item()
@@ -188,6 +193,8 @@ def test(args, model, history_list, test_list, num_rels, num_nodes,
     mrr_raw_r = utils.stat_ranks(ranks_raw_r, "raw_rel")
     mrr_filter_r = utils.stat_ranks(ranks_filter_r, "filter_rel")
     
+    if recorder is not None:
+        recorder.finish(len(test_list) - 1)
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r, last_history, last_output,MRRs,H1,H3,H10,mrr_sum_avg,hit1_sum_avg,hit3_sum_avg,hit10_sum_avg
 
 @torch.no_grad()
@@ -517,7 +524,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
             print("Final full-pipeline VALIDATION (supplementary; after TEST)")
             test(args, model, train_list, valid_list, num_rels, num_nodes, use_cuda,
                  all_ans_list_valid, all_ans_list_r_valid, model_state_file, static_graph,
-                 "test", result[4], result[5], static_graph_diffu, model_diffpre)
+                 "test", result[4], result[5], static_graph_diffu, model_diffpre, phase="validation")
         fitlog.finish()
     else:
         print("----------------------------------------start training----------------------------------------\n")
@@ -771,6 +778,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                     model_diffpre.load_state_dict(checkpoint_diffu)
                 # The next stage starts from these BEST feature weights and the
                 # LAST optimizer states, exactly as in the uninterrupted loop.
+                if getattr(args, 'rcpr_diagnostics', False):
+                    record_training_stage(args, train_sample_num, model_repre, diffu_rep, output_reply_triple)
                 save_training_state(args, train_sample_num, model_repre, model_diffpre,
                                     optimizer, optimizer_diffu, run_device, auxiliary=None)
 
@@ -795,7 +804,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
             print("Final full-pipeline VALIDATION (supplementary; after TEST)")
             test(args, model, train_list, valid_list, num_rels, num_nodes, use_cuda,
                  all_ans_list_valid, all_ans_list_r_valid, model_state_file, static_graph,
-                 "test", last_history, last_output, static_graph_diffu, model_diffpre)
+                 "test", last_history, last_output, static_graph_diffu, model_diffpre, phase="validation")
         fitlog.finish()
         # pca(entity_old,entity_new,args.dataset,mrr_old,mrr_new)
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r
